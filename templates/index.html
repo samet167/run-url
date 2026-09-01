@@ -1,0 +1,759 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Render 24/7 Keep-Alive Hub | Prevent Cold Starts</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['"Plus Jakarta Sans"', 'sans-serif'],
+                        mono: ['"JetBrains Mono"', 'monospace'],
+                    },
+                    colors: {
+                        brand: {
+                            50: '#ecfdf5',
+                            100: '#d1fae5',
+                            500: '#10b981',
+                            600: '#059669',
+                            700: '#047857',
+                        }
+                    },
+                    screens: {
+                        'xs': '420px',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        /* Custom scrollbar for dark aesthetic */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #0f172a;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #334155;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #475569;
+        }
+        .glass-panel {
+            background: rgba(15, 23, 42, 0.75);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(51, 65, 85, 0.6);
+        }
+        /* Mobile touch optimization */
+        button, a, input {
+            -webkit-tap-highlight-color: transparent;
+        }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans antialiased selection:bg-emerald-500 selection:text-white flex flex-col">
+
+    <!-- Top Glow Gradient Background -->
+    <div class="fixed top-0 left-1/2 -translate-x-1/2 w-full max-w-7xl h-64 bg-gradient-to-b from-emerald-600/15 via-indigo-600/5 to-transparent blur-3xl pointer-events-none -z-10"></div>
+
+    <!-- Navigation Header -->
+    <header class="sticky top-0 z-40 border-b border-slate-800/80 bg-slate-950/90 backdrop-blur-md">
+        <div class="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-2">
+            
+            <!-- Brand Logo -->
+            <div class="flex items-center gap-2.5 min-w-0">
+                <div class="relative flex items-center justify-center w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-700 shadow-lg shadow-emerald-500/20 text-white font-bold shrink-0">
+                    <i data-lucide="zap" class="w-4 h-4 sm:w-5 sm:h-5"></i>
+                    <span class="absolute -top-1 -right-1 flex h-2.5 w-2.5 sm:h-3 sm:w-3">
+                        <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                        <span class="relative inline-flex rounded-full h-2.5 w-2.5 sm:h-3 sm:w-3 bg-emerald-500"></span>
+                    </span>
+                </div>
+                <div class="truncate">
+                    <h1 class="text-sm sm:text-base md:text-lg font-bold tracking-tight text-white flex items-center gap-1.5 truncate">
+                        <span>Keep-Alive</span>
+                        <span class="text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 font-semibold border border-emerald-500/30">24/7 Hub</span>
+                    </h1>
+                    <p class="hidden xs:block text-[11px] text-slate-400 truncate">Auto-ping every {{ ping_interval }} min</p>
+                </div>
+            </div>
+
+            <!-- Controls & Sync Timers -->
+            <div class="flex items-center gap-1.5 sm:gap-3 shrink-0">
+                <!-- Next Sweep on Desktop -->
+                <div class="hidden lg:flex items-center gap-2 text-xs text-slate-400 bg-slate-900/90 border border-slate-800 px-3 py-1.5 rounded-lg">
+                    <i data-lucide="clock" class="w-3.5 h-3.5 text-emerald-400"></i>
+                    <span>Next Sweep: <strong id="next-sweep-label" class="text-slate-200 font-mono">--:--</strong></span>
+                </div>
+
+                <!-- Sync Countdown Badge -->
+                <div class="flex items-center gap-1.5 text-[11px] sm:text-xs text-slate-400 bg-slate-900/90 border border-slate-800 px-2 sm:px-2.5 py-1.5 rounded-lg">
+                    <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                    <span class="hidden xs:inline">Sync in</span>
+                    <strong id="refresh-countdown" class="text-slate-200 font-mono">15s</strong>
+                </div>
+
+                <!-- Sweep All Button -->
+                <button onclick="triggerPingAll()" id="btn-sweep-all" class="inline-flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white shadow-sm shadow-emerald-900/40 transition active:scale-95 cursor-pointer">
+                    <i data-lucide="activity" class="w-3.5 h-3.5"></i>
+                    <span class="hidden sm:inline">Sweep All</span>
+                </button>
+
+                <!-- Refresh Button -->
+                <button onclick="fetchData(true)" title="Manual Refresh" class="p-1.5 sm:p-2 rounded-lg text-slate-400 hover:text-slate-200 bg-slate-900 hover:bg-slate-800 border border-slate-800 transition active:scale-95 cursor-pointer">
+                    <i data-lucide="rotate-cw" id="refresh-icon" class="w-3.5 h-3.5 sm:w-4 sm:h-4"></i>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content Container -->
+    <main class="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-8 space-y-4 sm:space-y-6">
+
+        <!-- Metrics Overview Grid -->
+        <section class="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-4">
+            <!-- Total Targets -->
+            <div class="glass-panel p-3.5 sm:p-5 rounded-xl sm:rounded-2xl relative overflow-hidden group">
+                <div class="flex items-center justify-between">
+                    <span class="text-[10px] sm:text-xs font-medium text-slate-400 uppercase tracking-wider">Total</span>
+                    <div class="p-1.5 sm:p-2 rounded-lg sm:rounded-xl bg-slate-800/80 text-slate-300">
+                        <i data-lucide="server" class="w-3.5 h-3.5 sm:w-4 sm:h-4"></i>
+                    </div>
+                </div>
+                <div class="mt-2 sm:mt-3 flex items-baseline gap-1 sm:gap-2">
+                    <span id="metric-total" class="text-2xl sm:text-3xl font-extrabold text-white font-mono">0</span>
+                    <span class="text-[10px] sm:text-xs text-slate-400">endpoints</span>
+                </div>
+            </div>
+
+            <!-- Active / Awake -->
+            <div class="glass-panel p-3.5 sm:p-5 rounded-xl sm:rounded-2xl relative overflow-hidden group border-emerald-500/20">
+                <div class="flex items-center justify-between">
+                    <span class="text-[10px] sm:text-xs font-medium text-emerald-400 uppercase tracking-wider">Awake</span>
+                    <div class="p-1.5 sm:p-2 rounded-lg sm:rounded-xl bg-emerald-950/60 text-emerald-400 border border-emerald-500/20">
+                        <i data-lucide="check-circle-2" class="w-3.5 h-3.5 sm:w-4 sm:h-4"></i>
+                    </div>
+                </div>
+                <div class="mt-2 sm:mt-3 flex items-baseline gap-1 sm:gap-2">
+                    <span id="metric-alive" class="text-2xl sm:text-3xl font-extrabold text-emerald-400 font-mono">0</span>
+                    <span class="text-[10px] sm:text-xs text-slate-400">online</span>
+                </div>
+            </div>
+
+            <!-- Waking Up -->
+            <div class="glass-panel p-3.5 sm:p-5 rounded-xl sm:rounded-2xl relative overflow-hidden group border-amber-500/20">
+                <div class="flex items-center justify-between">
+                    <span class="text-[10px] sm:text-xs font-medium text-amber-400 uppercase tracking-wider">Waking</span>
+                    <div class="p-1.5 sm:p-2 rounded-lg sm:rounded-xl bg-amber-950/60 text-amber-400 border border-amber-500/20">
+                        <i data-lucide="loader-2" class="w-3.5 h-3.5 sm:w-4 sm:h-4"></i>
+                    </div>
+                </div>
+                <div class="mt-2 sm:mt-3 flex items-baseline gap-1 sm:gap-2">
+                    <span id="metric-waking" class="text-2xl sm:text-3xl font-extrabold text-amber-400 font-mono">0</span>
+                    <span class="text-[10px] sm:text-xs text-slate-400">cold boot</span>
+                </div>
+            </div>
+
+            <!-- Failed / Offline -->
+            <div class="glass-panel p-3.5 sm:p-5 rounded-xl sm:rounded-2xl relative overflow-hidden group border-rose-500/20">
+                <div class="flex items-center justify-between">
+                    <span class="text-[10px] sm:text-xs font-medium text-rose-400 uppercase tracking-wider">Offline</span>
+                    <div class="p-1.5 sm:p-2 rounded-lg sm:rounded-xl bg-rose-950/60 text-rose-400 border border-rose-500/20">
+                        <i data-lucide="alert-triangle" class="w-3.5 h-3.5 sm:w-4 sm:h-4"></i>
+                    </div>
+                </div>
+                <div class="mt-2 sm:mt-3 flex items-baseline gap-1 sm:gap-2">
+                    <span id="metric-failed" class="text-2xl sm:text-3xl font-extrabold text-rose-400 font-mono">0</span>
+                    <span class="text-[10px] sm:text-xs text-slate-400">failed</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Add URL Form Panel -->
+        <section class="glass-panel p-4 sm:p-6 rounded-xl sm:rounded-2xl shadow-xl shadow-black/40">
+            <div class="flex items-center gap-2 mb-3 sm:mb-4">
+                <i data-lucide="plus-circle" class="w-4 h-4 sm:w-5 sm:h-5 text-emerald-400"></i>
+                <h2 class="text-sm sm:text-base font-bold text-white">Register Target Render Deployment</h2>
+            </div>
+            
+            <form id="add-url-form" onsubmit="handleAddUrl(event)" class="grid grid-cols-1 md:grid-cols-12 gap-3 sm:gap-4 items-end">
+                <div class="md:col-span-4">
+                    <label for="project-name" class="block text-xs font-medium text-slate-300 mb-1">
+                        Project Name <span class="text-rose-400">*</span>
+                    </label>
+                    <div class="relative">
+                        <span class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-slate-500">
+                            <i data-lucide="box" class="w-4 h-4"></i>
+                        </span>
+                        <input type="text" id="project-name" required placeholder="e.g. Pharmacy POS Backend" 
+                               class="w-full h-11 bg-slate-900/90 border border-slate-700/80 rounded-xl pl-9 pr-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition">
+                    </div>
+                </div>
+
+                <div class="md:col-span-6">
+                    <label for="target-url" class="block text-xs font-medium text-slate-300 mb-1">
+                        Render URL (Health Check Endpoint) <span class="text-rose-400">*</span>
+                    </label>
+                    <div class="relative">
+                        <span class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-slate-500">
+                            <i data-lucide="globe" class="w-4 h-4"></i>
+                        </span>
+                        <input type="text" id="target-url" required placeholder="https://my-backend.onrender.com/" 
+                               class="w-full h-11 bg-slate-900/90 border border-slate-700/80 rounded-xl pl-9 pr-3 text-sm text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition">
+                    </div>
+                </div>
+
+                <div class="md:col-span-2">
+                    <button type="submit" id="btn-submit-url" class="w-full h-11 inline-flex items-center justify-center gap-2 px-4 rounded-xl font-semibold text-sm bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white shadow-lg shadow-emerald-950/50 transition active:scale-[0.98] cursor-pointer">
+                        <i data-lucide="plus" class="w-4 h-4"></i>
+                        <span>Monitor URL</span>
+                    </button>
+                </div>
+            </form>
+        </section>
+
+        <!-- Monitored Endpoints Section -->
+        <section class="glass-panel rounded-xl sm:rounded-2xl overflow-hidden shadow-xl shadow-black/40">
+            
+            <!-- Section Header & Filter -->
+            <div class="px-4 sm:px-6 py-3.5 sm:py-4 border-b border-slate-800 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+                <div class="flex items-center justify-between sm:justify-start gap-2">
+                    <div class="flex items-center gap-2">
+                        <i data-lucide="list-checks" class="w-4 h-4 sm:w-5 sm:h-5 text-emerald-400"></i>
+                        <h2 class="text-sm sm:text-base font-bold text-white">Active Monitored Targets</h2>
+                    </div>
+                    <span id="badge-count" class="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 font-mono">0 items</span>
+                </div>
+                
+                <div class="w-full sm:w-64 relative">
+                    <span class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-slate-500">
+                        <i data-lucide="search" class="w-3.5 h-3.5"></i>
+                    </span>
+                    <input type="text" id="filter-input" oninput="filterUrls()" placeholder="Search project or URL..." 
+                           class="w-full h-9 bg-slate-900 border border-slate-800 rounded-lg pl-8 pr-3 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-emerald-500">
+                </div>
+            </div>
+
+            <!-- Mobile Card View (Phone Screens) -->
+            <div id="mobile-cards-container" class="block md:hidden divide-y divide-slate-800/80 p-2 sm:p-3 space-y-3">
+                <!-- Mobile dynamic cards populated by JS -->
+            </div>
+
+            <!-- Desktop Table View (Tablet & Desktop Screens) -->
+            <div class="hidden md:block overflow-x-auto">
+                <table class="w-full text-left text-sm">
+                    <thead class="bg-slate-900/70 border-b border-slate-800 text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                        <tr>
+                            <th scope="col" class="px-6 py-3.5">Project</th>
+                            <th scope="col" class="px-6 py-3.5">Target URL</th>
+                            <th scope="col" class="px-6 py-3.5">Live Status</th>
+                            <th scope="col" class="px-6 py-3.5">Latency</th>
+                            <th scope="col" class="px-6 py-3.5">Last Checked</th>
+                            <th scope="col" class="px-6 py-3.5 text-right">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="url-table-body" class="divide-y divide-slate-800/60 font-normal">
+                        <!-- Dynamic rows rendered by JS -->
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Empty State -->
+            <div id="empty-state-view" class="hidden px-4 py-12 text-center text-slate-500">
+                <div class="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-slate-900/80 border border-slate-800 text-slate-400 mb-3">
+                    <i data-lucide="radio" class="w-6 h-6"></i>
+                </div>
+                <h3 class="text-sm font-semibold text-slate-300">No Target URLs Registered</h3>
+                <p class="text-xs text-slate-500 mt-1 max-w-sm mx-auto">Add your Render web services above. The background worker will automatically keep them awake 24/7.</p>
+            </div>
+        </section>
+
+        <!-- Self-Keep-Alive & Tips Banner -->
+        <section class="grid grid-cols-1 md:grid-cols-2 gap-3 sm:gap-4">
+            <!-- Hub Self Keep-Alive Info -->
+            <div class="glass-panel p-4 sm:p-5 rounded-xl sm:rounded-2xl border border-indigo-500/20 bg-gradient-to-br from-indigo-950/30 to-slate-900/60">
+                <div class="flex items-start gap-3">
+                    <div class="p-2 sm:p-2.5 rounded-xl bg-indigo-950/80 text-indigo-400 border border-indigo-500/30 shrink-0 mt-0.5">
+                        <i data-lucide="shield-check" class="w-4 h-4 sm:w-5 sm:h-5"></i>
+                    </div>
+                    <div class="space-y-2 flex-1 min-w-0">
+                        <h3 class="text-xs sm:text-sm font-bold text-white">Keep THIS Hub Awake Permanently</h3>
+                        <p class="text-[11px] sm:text-xs text-slate-300 leading-relaxed">
+                            When deployed on Render Free Tier, register its self-health endpoint right here or in UptimeRobot / cron-job.org:
+                        </p>
+                        <div class="flex items-center gap-2 bg-slate-950/90 border border-indigo-500/30 rounded-lg p-2 font-mono text-[11px] sm:text-xs text-indigo-300">
+                            <span id="self-url" class="truncate flex-1">https://your-hub.onrender.com/api/health</span>
+                            <button onclick="copySelfHealthUrl()" title="Copy URL" class="p-1 hover:text-white transition cursor-pointer shrink-0">
+                                <i data-lucide="copy" class="w-3.5 h-3.5"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Free Tier Cold-Start Architecture Tip -->
+            <div class="glass-panel p-4 sm:p-5 rounded-xl sm:rounded-2xl border border-emerald-500/20 bg-gradient-to-br from-emerald-950/30 to-slate-900/60">
+                <div class="flex items-start gap-3">
+                    <div class="p-2 sm:p-2.5 rounded-xl bg-emerald-950/80 text-emerald-400 border border-emerald-500/30 shrink-0 mt-0.5">
+                        <i data-lucide="cpu" class="w-4 h-4 sm:w-5 sm:h-5"></i>
+                    </div>
+                    <div class="space-y-1.5 flex-1 min-w-0">
+                        <h3 class="text-xs sm:text-sm font-bold text-white">How Render Cold Starts Work</h3>
+                        <p class="text-[11px] sm:text-xs text-slate-300 leading-relaxed">
+                            Render free web services spin down after <strong>15 minutes of inactivity</strong>. This hub issues lightweight HTTP requests every <strong>10 minutes</strong>, keeping container memory warm and preventing the 50-second cold start delay.
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="border-t border-slate-900 py-6 text-center text-xs text-slate-500 px-4">
+        <p>Render 24/7 Keep-Alive Hub &bull; Production Ready &bull; Connected to Neon PostgreSQL</p>
+    </footer>
+
+    <!-- Toast Notification Container (Responsive Bottom Position) -->
+    <div id="toast-container" class="fixed bottom-4 inset-x-3 sm:inset-x-auto sm:right-5 z-50 flex flex-col gap-2 pointer-events-none"></div>
+
+    <!-- Frontend Script -->
+    <script>
+        // Auto-detect API base (if opened via VS Code Live Server on port 5500 or file://, route to FastAPI on port 8000)
+        const API_BASE = (window.location.port === '5500' || window.location.port === '3000' || window.location.port === '5173' || window.location.protocol === 'file:')
+            ? 'http://127.0.0.1:8000'
+            : '';
+
+        let allUrls = [];
+        let refreshTimer = null;
+        let countdown = 15;
+
+        // On document load
+        document.addEventListener('DOMContentLoaded', () => {
+            lucide.createIcons();
+            fetchData();
+            startCountdown();
+            updateSelfHealthEndpoint();
+
+            if (API_BASE) {
+                console.info(`[KeepAliveHub] Live Server detected. Routing API calls to: ${API_BASE}`);
+            }
+        });
+
+        function updateSelfHealthEndpoint() {
+            const origin = API_BASE || window.location.origin;
+            const elem = document.getElementById('self-url');
+            if (elem) {
+                elem.innerText = `${origin}/api/health`;
+            }
+        }
+
+        function copySelfHealthUrl() {
+            const url = document.getElementById('self-url').innerText;
+            navigator.clipboard.writeText(url).then(() => {
+                showToast('Copied health check URL to clipboard!', 'success');
+            });
+        }
+
+        // Fetch data from API
+        async function fetchData(manual = false) {
+            const icon = document.getElementById('refresh-icon');
+            if (manual && icon) icon.classList.add('animate-spin');
+
+            try {
+                const [urlsRes, statsRes] = await Promise.all([
+                    fetch(`${API_BASE}/api/urls`),
+                    fetch(`${API_BASE}/api/stats`)
+                ]);
+
+                if (!urlsRes.ok || !statsRes.ok) throw new Error('Failed to fetch data');
+
+                allUrls = await urlsRes.json();
+                const stats = await statsRes.json();
+
+                updateStats(stats);
+                renderAll(allUrls);
+                countdown = 15; // reset countdown
+
+                if (manual) showToast('Data synchronized successfully', 'info');
+            } catch (err) {
+                console.error('Fetch error:', err);
+                if (manual) showToast('Failed to connect to backend server. Make sure FastAPI is running on port 8000.', 'error');
+            } finally {
+                if (icon) {
+                    setTimeout(() => icon.classList.remove('animate-spin'), 600);
+                }
+            }
+        }
+
+        // Countdown timer for next sync
+        function startCountdown() {
+            if (refreshTimer) clearInterval(refreshTimer);
+            refreshTimer = setInterval(() => {
+                countdown--;
+                const elem = document.getElementById('refresh-countdown');
+                if (elem) elem.innerText = `${countdown}s`;
+
+                if (countdown <= 0) {
+                    countdown = 15;
+                    fetchData();
+                }
+            }, 1000);
+        }
+
+        // Update dashboard metrics
+        function updateStats(stats) {
+            document.getElementById('metric-total').innerText = stats.total || 0;
+            document.getElementById('metric-alive').innerText = stats.alive || 0;
+            document.getElementById('metric-waking').innerText = stats.waking || 0;
+            document.getElementById('metric-failed').innerText = stats.failed || 0;
+            document.getElementById('badge-count').innerText = `${stats.total || 0} items`;
+
+            if (stats.next_run) {
+                const nextDate = new Date(stats.next_run);
+                document.getElementById('next-sweep-label').innerText = nextDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            }
+        }
+
+        // Format relative time helper
+        function formatRelativeTime(isoString) {
+            if (!isoString) return 'Never checked';
+            const date = new Date(isoString);
+            const now = new Date();
+            const diffSeconds = Math.floor((now - date) / 1000);
+
+            if (diffSeconds < 5) return 'Just now';
+            if (diffSeconds < 60) return `${diffSeconds}s ago`;
+            const diffMins = Math.floor(diffSeconds / 60);
+            if (diffMins < 60) return `${diffMins}m ago`;
+            const diffHours = Math.floor(diffMins / 60);
+            if (diffHours < 24) return `${diffHours}h ago`;
+            return date.toLocaleDateString();
+        }
+
+        // Render Status Badge
+        function getStatusBadge(status, httpCode) {
+            if (!status || status === 'Pending Initial Ping') {
+                return `<span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 sm:py-1 rounded-full text-[11px] sm:text-xs font-semibold bg-slate-800 text-slate-300 border border-slate-700">
+                    <span class="w-1.5 h-1.5 rounded-full bg-slate-400"></span> Pending
+                </span>`;
+            }
+
+            if (status.startsWith('Active')) {
+                return `<span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 sm:py-1 rounded-full text-[11px] sm:text-xs font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 shadow-sm shadow-emerald-500/10">
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span> ${status}
+                </span>`;
+            }
+
+            if (status.includes('Waking') || status.includes('Redirect')) {
+                return `<span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 sm:py-1 rounded-full text-[11px] sm:text-xs font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/30 shadow-sm shadow-amber-500/10">
+                    <span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span> ${status}
+                </span>`;
+            }
+
+            return `<span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 sm:py-1 rounded-full text-[11px] sm:text-xs font-semibold bg-rose-500/15 text-rose-400 border border-rose-500/30 shadow-sm shadow-rose-500/10">
+                <span class="w-1.5 h-1.5 rounded-full bg-rose-400"></span> ${status}
+            </span>`;
+        }
+
+        // Render Latency Badge
+        function getLatencyBadge(ms) {
+            if (ms === null || ms === undefined) return '<span class="text-slate-500 font-mono text-xs">--</span>';
+            let color = 'text-emerald-400';
+            if (ms > 1000) color = 'text-amber-400';
+            if (ms > 4000) color = 'text-rose-400';
+            return `<span class="font-mono text-xs font-medium ${color}">${ms} ms</span>`;
+        }
+
+        // Render Both Mobile Cards & Desktop Table
+        function renderAll(urls) {
+            const emptyView = document.getElementById('empty-state-view');
+            const tbody = document.getElementById('url-table-body');
+            const mobileContainer = document.getElementById('mobile-cards-container');
+
+            if (!urls || urls.length === 0) {
+                emptyView.classList.remove('hidden');
+                tbody.innerHTML = '';
+                mobileContainer.innerHTML = '';
+                lucide.createIcons();
+                return;
+            }
+
+            emptyView.classList.add('hidden');
+
+            // 1. Render Mobile Cards
+            mobileContainer.innerHTML = urls.map(item => `
+                <div class="glass-panel p-4 rounded-xl border border-slate-800/90 space-y-3">
+                    <div class="flex items-start justify-between gap-2">
+                        <div>
+                            <h3 class="font-bold text-slate-100 text-sm">${escapeHtml(item.name)}</h3>
+                            <span class="text-[11px] text-slate-500">Added ${formatRelativeTime(item.created_at)}</span>
+                        </div>
+                        <div>
+                            ${getStatusBadge(item.status, item.http_code)}
+                        </div>
+                    </div>
+
+                    <div class="bg-slate-900/80 border border-slate-800 rounded-lg p-2.5 flex items-center justify-between gap-2">
+                        <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" 
+                           class="font-mono text-xs text-emerald-400 hover:underline truncate">
+                            ${escapeHtml(item.url)}
+                        </a>
+                        <div class="flex items-center gap-1 shrink-0">
+                            <button onclick="copyToClipboard('${escapeHtml(item.url)}')" title="Copy URL" class="p-1.5 text-slate-400 hover:text-white rounded bg-slate-800 cursor-pointer">
+                                <i data-lucide="copy" class="w-3.5 h-3.5"></i>
+                            </button>
+                            <a href="${escapeHtml(item.url)}" target="_blank" class="p-1.5 text-slate-400 hover:text-white rounded bg-slate-800">
+                                <i data-lucide="external-link" class="w-3.5 h-3.5"></i>
+                            </a>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-2 text-xs py-1 border-t border-slate-800/60">
+                        <div>
+                            <span class="text-slate-500 block text-[10px] uppercase">Latency</span>
+                            ${getLatencyBadge(item.response_time_ms)}
+                        </div>
+                        <div>
+                            <span class="text-slate-500 block text-[10px] uppercase">Last Checked</span>
+                            <span class="text-slate-300 font-medium">${formatRelativeTime(item.last_ping)}</span>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-2 pt-1">
+                        <button onclick="triggerPing(${item.id}, this)" 
+                                class="w-full h-9 inline-flex items-center justify-center gap-1.5 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 text-xs font-semibold active:scale-95 transition cursor-pointer">
+                            <i data-lucide="zap" class="w-3.5 h-3.5"></i>
+                            <span>Ping Now</span>
+                        </button>
+                        <button onclick="deleteUrl(${item.id}, '${escapeHtml(item.name)}')" 
+                                class="w-full h-9 inline-flex items-center justify-center gap-1.5 rounded-lg bg-rose-600/15 hover:bg-rose-600/25 text-rose-300 border border-rose-500/30 text-xs font-semibold active:scale-95 transition cursor-pointer">
+                            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                            <span>Delete</span>
+                        </button>
+                    </div>
+                </div>
+            `).join('');
+
+            // 2. Render Desktop Table
+            tbody.innerHTML = urls.map(item => `
+                <tr class="hover:bg-slate-900/50 transition duration-150 group">
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <div class="font-semibold text-slate-200">${escapeHtml(item.name)}</div>
+                        <div class="text-[11px] text-slate-500">Added ${formatRelativeTime(item.created_at)}</div>
+                    </td>
+                    <td class="px-6 py-4 max-w-xs truncate">
+                        <div class="flex items-center gap-2">
+                            <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" 
+                               class="font-mono text-xs text-emerald-400/90 hover:text-emerald-300 underline underline-offset-2 truncate">
+                                ${escapeHtml(item.url)}
+                            </a>
+                            <button onclick="copyToClipboard('${escapeHtml(item.url)}')" title="Copy URL" class="text-slate-500 hover:text-slate-300 opacity-0 group-hover:opacity-100 transition cursor-pointer">
+                                <i data-lucide="copy" class="w-3.5 h-3.5"></i>
+                            </button>
+                        </div>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        ${getStatusBadge(item.status, item.http_code)}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        ${getLatencyBadge(item.response_time_ms)}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-xs text-slate-400" title="${item.last_ping || ''}">
+                        <div class="flex items-center gap-1.5">
+                            <i data-lucide="clock-3" class="w-3.5 h-3.5 text-slate-500"></i>
+                            <span>${formatRelativeTime(item.last_ping)}</span>
+                        </div>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-right text-xs font-medium space-x-2">
+                        <button onclick="triggerPing(${item.id}, this)" title="Ping URL Now" 
+                                class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-emerald-600 text-slate-300 hover:text-white border border-slate-700 transition cursor-pointer active:scale-95">
+                            <i data-lucide="zap" class="w-3.5 h-3.5"></i>
+                            <span>Ping</span>
+                        </button>
+                        <button onclick="deleteUrl(${item.id}, '${escapeHtml(item.name)}')" title="Delete from monitoring" 
+                                class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-rose-600 text-slate-300 hover:text-white border border-slate-700 transition cursor-pointer active:scale-95">
+                            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                        </button>
+                    </td>
+                </tr>
+            `).join('');
+
+            lucide.createIcons();
+        }
+
+        // Add URL Handler
+        async function handleAddUrl(event) {
+            event.preventDefault();
+            const nameInput = document.getElementById('project-name');
+            const urlInput = document.getElementById('target-url');
+            const submitBtn = document.getElementById('btn-submit-url');
+
+            const name = nameInput.value.trim();
+            const url = urlInput.value.trim();
+
+            if (!name || !url) {
+                showToast('Please provide both a project name and URL', 'error');
+                return;
+            }
+
+            submitBtn.disabled = true;
+            submitBtn.innerHTML = `<i data-lucide="loader" class="w-4 h-4 animate-spin"></i><span>Adding...</span>`;
+            lucide.createIcons();
+
+            try {
+                const res = await fetch(`${API_BASE}/api/urls`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, url })
+                });
+
+                const data = await res.json();
+
+                if (!res.ok) {
+                    throw new Error(data.detail || data.message || 'Failed to add endpoint');
+                }
+
+                showToast(data.message || `Added ${name} successfully!`, 'success');
+                nameInput.value = '';
+                urlInput.value = '';
+                fetchData();
+            } catch (err) {
+                showToast(err.message, 'error');
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.innerHTML = `<i data-lucide="plus" class="w-4 h-4"></i><span>Monitor URL</span>`;
+                lucide.createIcons();
+            }
+        }
+
+        // Single Ping Trigger
+        async function triggerPing(id, btn) {
+            const originalHtml = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = `<i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i><span>Pinging...</span>`;
+            lucide.createIcons();
+
+            try {
+                const res = await fetch(`${API_BASE}/api/ping/${id}`, { method: 'POST' });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'Ping failed');
+                showToast(`Pinged target! Result: ${data.data.status} (${data.data.response_time_ms}ms)`, 'success');
+                fetchData();
+            } catch (err) {
+                showToast(`Ping error: ${err.message}`, 'error');
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = originalHtml;
+                lucide.createIcons();
+            }
+        }
+
+        // Sweep All Trigger
+        async function triggerPingAll() {
+            const btn = document.getElementById('btn-sweep-all');
+            const originalHtml = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = `<i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i><span>Sweeping...</span>`;
+            lucide.createIcons();
+
+            try {
+                const res = await fetch(`${API_BASE}/api/ping-all`, { method: 'POST' });
+                const data = await res.json();
+                showToast(data.message || 'Sweep started across all targets!', 'info');
+                setTimeout(fetchData, 2000);
+            } catch (err) {
+                showToast(`Error initiating sweep: ${err.message}`, 'error');
+            } finally {
+                setTimeout(() => {
+                    btn.disabled = false;
+                    btn.innerHTML = originalHtml;
+                    lucide.createIcons();
+                }, 2000);
+            }
+        }
+
+        // Delete URL Trigger
+        async function deleteUrl(id, name) {
+            if (!confirm(`Are you sure you want to stop monitoring "${name}"?`)) return;
+
+            try {
+                const res = await fetch(`${API_BASE}/api/urls/${id}`, { method: 'DELETE' });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'Delete failed');
+                showToast(`Removed "${name}" from keep-alive monitor`, 'info');
+                fetchData();
+            } catch (err) {
+                showToast(`Delete failed: ${err.message}`, 'error');
+            }
+        }
+
+        // Search Filter
+        function filterUrls() {
+            const q = document.getElementById('filter-input').value.toLowerCase();
+            const filtered = allUrls.filter(u => 
+                u.name.toLowerCase().includes(q) || u.url.toLowerCase().includes(q)
+            );
+            renderAll(filtered);
+        }
+
+        // Utility: Copy text
+        function copyToClipboard(text) {
+            navigator.clipboard.writeText(text).then(() => {
+                showToast('URL copied to clipboard', 'info');
+            });
+        }
+
+        // Utility: HTML Escaper
+        function escapeHtml(str) {
+            if (!str) return '';
+            return str
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+
+        // Toast Notification System (Touch-Friendly Responsive)
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            toast.className = `pointer-events-auto flex items-center gap-2.5 px-4 py-3 rounded-xl text-xs font-medium shadow-2xl backdrop-blur-md border transition-all duration-300 transform translate-y-2 opacity-0 ${
+                type === 'success' ? 'bg-emerald-950/95 text-emerald-200 border-emerald-500/40 shadow-emerald-950/50' :
+                type === 'error' ? 'bg-rose-950/95 text-rose-200 border-rose-500/40 shadow-rose-950/50' :
+                'bg-slate-900/95 text-slate-200 border-slate-700/80 shadow-black/60'
+            }`;
+
+            const iconName = type === 'success' ? 'check-circle' : type === 'error' ? 'alert-circle' : 'info';
+            toast.innerHTML = `<i data-lucide="${iconName}" class="w-4 h-4 shrink-0"></i><span class="flex-1">${escapeHtml(message)}</span>`;
+
+            container.appendChild(toast);
+            lucide.createIcons();
+
+            // Animate in
+            requestAnimationFrame(() => {
+                toast.classList.remove('translate-y-2', 'opacity-0');
+            });
+
+            // Auto dismiss
+            setTimeout(() => {
+                toast.classList.add('opacity-0', 'translate-y-2');
+                setTimeout(() => toast.remove(), 300);
+            }, 3500);
+        }
+    </script>
+</body>
+</html>

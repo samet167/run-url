@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: render-keep-alive-hub
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    plan: free
+    region: ohio
+    envVars:
+      - key: DATABASE_URL
+        value: postgresql://neondb_owner:npg_aKMVL6bok7gm@ep-floral-lab-aehhbt84-pooler.c-2.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require
+      - key: PING_INTERVAL_MINUTES
+        value: "10"
+      - key: HTTP_TIMEOUT_SECONDS
+        value: "15"

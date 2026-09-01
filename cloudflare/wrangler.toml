@@ -1,0 +1,13 @@
+name = "render-keepalive-hub"
+main = "src/index.js"
+compatibility_date = "2024-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Native Cloudflare Edge Cron Trigger (Runs every 10 minutes automatically 24/7/365)
+[triggers]
+crons = ["*/10 * * * *"]
+
+# Environment Variables
+[vars]
+DATABASE_URL = "postgresql://neondb_owner:npg_aKMVL6bok7gm@ep-floral-lab-aehhbt84-pooler.c-2.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
+HTTP_TIMEOUT_SECONDS = "15"

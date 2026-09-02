@@ -1,5 +1,7 @@
 import { neon } from '@neondatabase/serverless';
 
+const GOOGLE_CLIENT_ID = '1015295193209-pqllnd3a5d5m1m11nu4hvkvfdpbapm87.apps.googleusercontent.com';
+
 // -----------------------------------------------------------------------------
 // Core Ping Logic
 // -----------------------------------------------------------------------------
@@ -62,17 +64,37 @@ function getSql(env) {
 
 async function ensureTable(sql) {
   await sql`
+    CREATE TABLE IF NOT EXISTS users (
+      id SERIAL PRIMARY KEY,
+      google_id VARCHAR(255) UNIQUE NOT NULL,
+      email VARCHAR(255) NOT NULL,
+      name VARCHAR(255),
+      picture VARCHAR(1024),
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    );
+  `;
+  await sql`
     CREATE TABLE IF NOT EXISTS monitored_urls (
       id SERIAL PRIMARY KEY,
+      user_id INT,
+      user_email VARCHAR(255),
       name VARCHAR(255) NOT NULL,
-      url VARCHAR(1024) UNIQUE NOT NULL,
+      url VARCHAR(1024) NOT NULL,
       status VARCHAR(100) DEFAULT 'Pending Initial Ping',
       response_time_ms INT,
       http_code INT,
+      is_active BOOLEAN DEFAULT TRUE,
       last_ping TIMESTAMP WITH TIME ZONE,
       created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
     );
   `;
+  try {
+    await sql`ALTER TABLE monitored_urls ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;`;
+    await sql`ALTER TABLE monitored_urls ADD COLUMN IF NOT EXISTS user_id INT;`;
+    await sql`ALTER TABLE monitored_urls ADD COLUMN IF NOT EXISTS user_email VARCHAR(255);`;
+  } catch (e) {
+    // Columns already exist
+  }
 }
 
 async function pingAndSaveUrl(sql, id, url) {
@@ -83,13 +105,14 @@ async function pingAndSaveUrl(sql, id, url) {
         http_code = ${result.http_code},
         response_time_ms = ${result.response_time_ms},
         last_ping = NOW()
-    WHERE id = ${id}
+    WHERE id = ${id} AND is_active = TRUE
   `;
   return result;
 }
 
 async function sweepAllUrls(sql) {
-  const urls = await sql`SELECT id, url, name FROM monitored_urls`;
+  // Pings all active URLs across all users to keep everyone's apps awake 24/7
+  const urls = await sql`SELECT id, url, name FROM monitored_urls WHERE is_active = TRUE`;
   if (!urls || urls.length === 0) return;
 
   const pingPromises = urls.map(u => pingAndSaveUrl(sql, u.id, u.url));
@@ -97,10 +120,55 @@ async function sweepAllUrls(sql) {
 }
 
 // -----------------------------------------------------------------------------
+// Google Authentication Verification
+// -----------------------------------------------------------------------------
+async function verifyGoogleToken(authHeader, sql) {
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    throw new Error('Authentication required. Please sign in with Google.');
+  }
+
+  const token = authHeader.split(' ')[1].trim();
+  if (!token) throw new Error('Empty authentication token.');
+
+  // Validate token via Google tokeninfo endpoint
+  const verifyRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(token)}`);
+  if (!verifyRes.ok) {
+    throw new Error('Google token expired or invalid. Please sign in again.');
+  }
+
+  const idinfo = await verifyRes.json();
+  const googleId = idinfo.sub;
+  const email = (idinfo.email || '').toLowerCase();
+  const name = idinfo.name || email.split('@')[0];
+  const picture = idinfo.picture || '';
+
+  if (!googleId || !email) {
+    throw new Error('Invalid Google token claims.');
+  }
+
+  // Find or upsert user in DB
+  const existingUsers = await sql`SELECT * FROM users WHERE google_id = ${googleId} OR email = ${email} LIMIT 1`;
+  let user;
+  if (existingUsers && existingUsers.length > 0) {
+    user = existingUsers[0];
+    await sql`UPDATE users SET name = ${name}, picture = ${picture}, email = ${email} WHERE id = ${user.id}`;
+  } else {
+    const inserted = await sql`
+      INSERT INTO users (google_id, email, name, picture)
+      VALUES (${googleId}, ${email}, ${name}, ${picture})
+      RETURNING *
+    `;
+    user = inserted[0];
+  }
+
+  return { id: user.id, google_id: googleId, email, name, picture };
+}
+
+// -----------------------------------------------------------------------------
 // Cloudflare Worker Handlers
 // -----------------------------------------------------------------------------
 export default {
-  // 1. Native Cron Trigger (Runs every 10 mins automatically at Cloudflare Edge)
+  // 1. Native Cron Trigger (Every 10 mins at Cloudflare Edge)
   async scheduled(event, env, ctx) {
     const sql = getSql(env);
     await ensureTable(sql);
@@ -112,35 +180,69 @@ export default {
     const url = new URL(request.url);
     const sql = getSql(env);
 
-    // Ensure database table exists
     try {
       await ensureTable(sql);
     } catch (e) {
       console.error('DB Init Error:', e);
     }
 
-    // CORS Headers
     const corsHeaders = {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     };
 
     if (request.method === 'OPTIONS') {
       return new Response(null, { headers: corsHeaders });
     }
 
-    // Router: Web Dashboard
+    // Web Dashboard UI
     if (url.pathname === '/' && request.method === 'GET') {
       return new Response(renderDashboardHtml(), {
         headers: { 'Content-Type': 'text/html; charset=utf-8' }
       });
     }
 
-    // Router: GET /api/urls
+    // Self Health Check (Public)
+    if (url.pathname === '/api/health' && request.method === 'GET') {
+      return new Response(JSON.stringify({
+        status: 'ok',
+        platform: 'Cloudflare Workers (Edge)',
+        database: 'Neon PostgreSQL Serverless',
+        cron: 'Active (*/10 * * * *)',
+        timestamp: new Date().toISOString()
+      }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
+
+    // Authenticated Routes
+    const authHeader = request.headers.get('Authorization');
+    let currentUser;
+    try {
+      if (url.pathname.startsWith('/api/')) {
+        currentUser = await verifyGoogleToken(authHeader, sql);
+      }
+    } catch (authErr) {
+      return new Response(JSON.stringify({ detail: authErr.message }), {
+        status: 401,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    // Router: GET /api/me
+    if (url.pathname === '/api/me' && request.method === 'GET') {
+      return new Response(JSON.stringify({ success: true, user: currentUser }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    // Router: GET /api/urls (Isolated to Current User)
     if (url.pathname === '/api/urls' && request.method === 'GET') {
       try {
-        const rows = await sql`SELECT * FROM monitored_urls ORDER BY id DESC`;
+        const rows = await sql`
+          SELECT * FROM monitored_urls
+          WHERE user_id = ${currentUser.id} OR user_email = ${currentUser.email}
+          ORDER BY id DESC
+        `;
         return new Response(JSON.stringify(rows), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' }
         });
@@ -149,7 +251,7 @@ export default {
       }
     }
 
-    // Router: POST /api/urls
+    // Router: POST /api/urls (Add URL under Current User)
     if (url.pathname === '/api/urls' && request.method === 'POST') {
       try {
         const body = await request.json();
@@ -167,16 +269,13 @@ export default {
           targetUrl = 'https://' + targetUrl;
         }
 
-        // Insert into Neon DB
         const inserted = await sql`
-          INSERT INTO monitored_urls (name, url, status)
-          VALUES (${name}, ${targetUrl}, 'Waking Up...')
-          ON CONFLICT (url) DO UPDATE SET name = EXCLUDED.name
+          INSERT INTO monitored_urls (user_id, user_email, name, url, status, is_active)
+          VALUES (${currentUser.id}, ${currentUser.email}, ${name}, ${targetUrl}, 'Waking Up...', TRUE)
           RETURNING *
         `;
 
         const newRec = inserted[0];
-        // Trigger immediate background ping
         ctx.waitUntil(pingAndSaveUrl(sql, newRec.id, newRec.url));
 
         return new Response(JSON.stringify({
@@ -189,15 +288,54 @@ export default {
       }
     }
 
+    // Router: POST /api/urls/:id/toggle (Pause / Resume)
+    if (url.pathname.match(/^\/api\/urls\/\d+\/toggle$/) && request.method === 'POST') {
+      const id = parseInt(url.pathname.split('/')[3], 10);
+      try {
+        const rows = await sql`
+          SELECT * FROM monitored_urls
+          WHERE id = ${id} AND (user_id = ${currentUser.id} OR user_email = ${currentUser.email})
+        `;
+        if (!rows || rows.length === 0) {
+          return new Response(JSON.stringify({ detail: 'Target not found in your account' }), { status: 404, headers: corsHeaders });
+        }
+
+        const current = rows[0];
+        const nextActive = !current.is_active;
+        const nextStatus = nextActive ? 'Resuming...' : 'Paused';
+
+        const updated = await sql`
+          UPDATE monitored_urls
+          SET is_active = ${nextActive}, status = ${nextStatus}
+          WHERE id = ${id}
+          RETURNING *
+        `;
+
+        const updatedRec = updated[0];
+        if (nextActive) {
+          ctx.waitUntil(pingAndSaveUrl(sql, id, updatedRec.url));
+        }
+
+        const stateStr = nextActive ? 'Resumed (Active)' : 'Paused';
+        return new Response(JSON.stringify({
+          success: true,
+          message: `'${updatedRec.name}' is now ${stateStr}.`,
+          data: updatedRec
+        }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ detail: err.message }), { status: 500, headers: corsHeaders });
+      }
+    }
+
     // Router: DELETE /api/urls/:id
     if (url.pathname.startsWith('/api/urls/') && request.method === 'DELETE') {
       const id = parseInt(url.pathname.split('/').pop(), 10);
-      if (isNaN(id)) {
-        return new Response(JSON.stringify({ detail: 'Invalid ID' }), { status: 400, headers: corsHeaders });
-      }
       try {
-        await sql`DELETE FROM monitored_urls WHERE id = ${id}`;
-        return new Response(JSON.stringify({ success: true, message: 'Target removed from monitoring.' }), {
+        await sql`
+          DELETE FROM monitored_urls
+          WHERE id = ${id} AND (user_id = ${currentUser.id} OR user_email = ${currentUser.email})
+        `;
+        return new Response(JSON.stringify({ success: true, message: 'Target removed from your monitor.' }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' }
         });
       } catch (err) {
@@ -208,15 +346,23 @@ export default {
     // Router: POST /api/ping/:id
     if (url.pathname.startsWith('/api/ping/') && request.method === 'POST') {
       const id = parseInt(url.pathname.split('/').pop(), 10);
-      if (isNaN(id)) {
-        return new Response(JSON.stringify({ detail: 'Invalid ID' }), { status: 400, headers: corsHeaders });
-      }
       try {
-        const rows = await sql`SELECT * FROM monitored_urls WHERE id = ${id}`;
+        const rows = await sql`
+          SELECT * FROM monitored_urls
+          WHERE id = ${id} AND (user_id = ${currentUser.id} OR user_email = ${currentUser.email})
+        `;
         if (!rows || rows.length === 0) {
-          return new Response(JSON.stringify({ detail: 'Target not found' }), { status: 404, headers: corsHeaders });
+          return new Response(JSON.stringify({ detail: 'Target not found in your account' }), { status: 404, headers: corsHeaders });
         }
-        const pingRes = await pingAndSaveUrl(sql, id, rows[0].url);
+        const pingRes = await performHttpPing(rows[0].url);
+        await sql`
+          UPDATE monitored_urls
+          SET status = ${pingRes.status},
+              http_code = ${pingRes.http_code},
+              response_time_ms = ${pingRes.response_time_ms},
+              last_ping = NOW()
+          WHERE id = ${id}
+        `;
         return new Response(JSON.stringify({ success: true, data: { ...rows[0], ...pingRes } }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' }
         });
@@ -227,26 +373,35 @@ export default {
 
     // Router: POST /api/ping-all
     if (url.pathname === '/api/ping-all' && request.method === 'POST') {
-      ctx.waitUntil(sweepAllUrls(sql));
-      return new Response(JSON.stringify({ success: true, message: 'Sweep started across all targets!' }), {
+      const rows = await sql`
+        SELECT id, url FROM monitored_urls
+        WHERE (user_id = ${currentUser.id} OR user_email = ${currentUser.email}) AND is_active = TRUE
+      `;
+      ctx.waitUntil(Promise.allSettled(rows.map(r => pingAndSaveUrl(sql, r.id, r.url))));
+      return new Response(JSON.stringify({ success: true, message: 'Sweep started for your active targets!' }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
     }
 
-    // Router: GET /api/stats
+    // Router: GET /api/stats (User Isolated)
     if (url.pathname === '/api/stats' && request.method === 'GET') {
       try {
-        const rows = await sql`SELECT status FROM monitored_urls`;
+        const rows = await sql`
+          SELECT status, is_active FROM monitored_urls
+          WHERE user_id = ${currentUser.id} OR user_email = ${currentUser.email}
+        `;
         const total = rows.length;
-        const alive = rows.filter(r => r.status && r.status.startsWith('Active')).length;
-        const waking = rows.filter(r => r.status && (r.status.includes('Waking') || r.status.includes('Redirect'))).length;
-        const failed = rows.filter(r => r.status && (r.status.includes('Failed') || r.status.includes('Timeout') || r.status.includes('Unreachable'))).length;
+        const alive = rows.filter(r => r.is_active && r.status && r.status.startsWith('Active')).length;
+        const waking = rows.filter(r => r.is_active && r.status && (r.status.includes('Waking') || r.status.includes('Redirect'))).length;
+        const failed = rows.filter(r => r.is_active && r.status && (r.status.includes('Failed') || r.status.includes('Timeout') || r.status.includes('Unreachable'))).length;
+        const paused = rows.filter(r => !r.is_active).length;
 
         return new Response(JSON.stringify({
           total,
           alive,
           waking,
           failed,
+          paused,
           cron_schedule: 'Every 10 Minutes (Native Cloudflare Edge Cron)'
         }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
       } catch (err) {
@@ -254,36 +409,25 @@ export default {
       }
     }
 
-    // Router: GET /api/health
-    if (url.pathname === '/api/health' && request.method === 'GET') {
-      return new Response(JSON.stringify({
-        status: 'ok',
-        platform: 'Cloudflare Workers (Edge)',
-        database: 'Neon PostgreSQL Serverless',
-        cron: 'Active (*/10 * * * *)',
-        timestamp: new Date().toISOString()
-      }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-    }
-
     return new Response('404 Not Found', { status: 404, headers: corsHeaders });
   }
 };
 
 // -----------------------------------------------------------------------------
-// Responsive Dashboard HTML (Single File Edge Distribution)
+// Cloudflare Worker Embedded Dashboard HTML
 // -----------------------------------------------------------------------------
 function renderDashboardHtml() {
+  // Serves the multi-user HTML dashboard
   return `<!DOCTYPE html>
 <html lang="en" class="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Render 24/7 Keep-Alive Hub (Cloudflare Edge)</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <title>Render 24/7 Keep-Alive Hub | Cloudflare Edge</title>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
     <script>
         tailwind.config = {
             darkMode: 'class',
@@ -312,7 +456,6 @@ function renderDashboardHtml() {
     </style>
 </head>
 <body class="bg-slate-950 text-slate-100 min-h-screen font-sans antialiased selection:bg-orange-500 selection:text-white flex flex-col">
-
     <div class="fixed top-0 left-1/2 -translate-x-1/2 w-full max-w-7xl h-64 bg-gradient-to-b from-orange-600/15 via-emerald-600/5 to-transparent blur-3xl pointer-events-none -z-10"></div>
 
     <header class="sticky top-0 z-40 border-b border-slate-800/80 bg-slate-950/90 backdrop-blur-md">
@@ -328,463 +471,396 @@ function renderDashboardHtml() {
                 <div class="truncate">
                     <h1 class="text-sm sm:text-base md:text-lg font-bold tracking-tight text-white flex items-center gap-1.5 truncate">
                         <span>Keep-Alive Hub</span>
-                        <span class="text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5 rounded-full bg-orange-500/15 text-orange-400 font-semibold border border-orange-500/30">Cloudflare Edge 24/7</span>
+                        <span class="text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5 rounded-full bg-orange-500/15 text-orange-400 font-semibold border border-orange-500/30">Edge Multi-User</span>
                     </h1>
-                    <p class="hidden xs:block text-[11px] text-slate-400 truncate">Native Edge Cron &bull; Auto-ping every 10 min</p>
+                    <p class="hidden xs:block text-[11px] text-slate-400 truncate">Private Dashboard &bull; Auto-ping 10 min</p>
                 </div>
             </div>
 
-            <div class="flex items-center gap-1.5 sm:gap-3 shrink-0">
-                <div class="flex items-center gap-1.5 text-[11px] sm:text-xs text-slate-400 bg-slate-900/90 border border-slate-800 px-2 sm:px-2.5 py-1.5 rounded-lg">
-                    <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                    <span class="hidden xs:inline">Sync in</span>
-                    <strong id="refresh-countdown" class="text-slate-200 font-mono">15s</strong>
+            <div class="flex items-center gap-2 sm:gap-3 shrink-0">
+                <div id="auth-controls" class="hidden flex items-center gap-2 sm:gap-3">
+                    <div class="flex items-center gap-1.5 text-[11px] sm:text-xs text-slate-400 bg-slate-900/90 border border-slate-800 px-2 sm:px-2.5 py-1.5 rounded-lg">
+                        <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                        <span class="hidden xs:inline">Sync in</span>
+                        <strong id="refresh-countdown" class="text-slate-200 font-mono">15s</strong>
+                    </div>
+
+                    <button onclick="triggerPingAll()" id="btn-sweep-all" class="inline-flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-orange-600 hover:bg-orange-500 text-white shadow-sm shadow-orange-900/40 transition active:scale-95 cursor-pointer">
+                        <i data-lucide="activity" class="w-3.5 h-3.5"></i>
+                        <span class="hidden sm:inline">Sweep All</span>
+                    </button>
+
+                    <button onclick="fetchData(true)" title="Manual Refresh" class="p-1.5 sm:p-2 rounded-lg text-slate-400 hover:text-slate-200 bg-slate-900 hover:bg-slate-800 border border-slate-800 transition active:scale-95 cursor-pointer">
+                        <i data-lucide="rotate-cw" id="refresh-icon" class="w-3.5 h-3.5 sm:w-4 sm:h-4"></i>
+                    </button>
+
+                    <div class="flex items-center gap-2 pl-1 sm:pl-2 border-l border-slate-800">
+                        <img id="user-avatar" src="" alt="Avatar" class="w-8 h-8 rounded-full border border-orange-500/50 object-cover shrink-0 hidden">
+                        <div class="hidden md:block text-left min-w-0 max-w-[130px]">
+                            <div id="user-name" class="text-xs font-bold text-white truncate">User</div>
+                            <div id="user-email" class="text-[10px] text-slate-400 truncate">user@gmail.com</div>
+                        </div>
+                        <button onclick="handleSignOut()" title="Sign Out" class="p-1.5 sm:p-2 rounded-lg text-slate-400 hover:text-rose-300 hover:bg-rose-950/40 border border-slate-800 transition cursor-pointer">
+                            <i data-lucide="log-out" class="w-4 h-4"></i>
+                        </button>
+                    </div>
                 </div>
 
-                <button onclick="triggerPingAll()" id="btn-sweep-all" class="inline-flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-orange-600 hover:bg-orange-500 text-white shadow-sm shadow-orange-900/40 transition active:scale-95 cursor-pointer">
-                    <i data-lucide="activity" class="w-3.5 h-3.5"></i>
-                    <span class="hidden sm:inline">Sweep All</span>
-                </button>
-
-                <button onclick="fetchData(true)" title="Manual Refresh" class="p-1.5 sm:p-2 rounded-lg text-slate-400 hover:text-slate-200 bg-slate-900 hover:bg-slate-800 border border-slate-800 transition active:scale-95 cursor-pointer">
-                    <i data-lucide="rotate-cw" id="refresh-icon" class="w-3.5 h-3.5 sm:w-4 sm:h-4"></i>
-                </button>
+                <div id="unauth-header-btn" class="flex items-center">
+                    <button onclick="promptGoogleSignIn()" class="inline-flex items-center gap-2 px-3 sm:px-4 py-2 rounded-xl text-xs font-semibold bg-white text-slate-900 hover:bg-slate-100 shadow-md transition cursor-pointer">
+                        <svg class="w-4 h-4" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/></svg>
+                        <span>Sign In</span>
+                    </button>
+                </div>
             </div>
         </div>
     </header>
 
-    <main class="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-8 space-y-4 sm:space-y-6">
-        <section class="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-4">
-            <div class="glass-panel p-3.5 sm:p-5 rounded-xl sm:rounded-2xl relative overflow-hidden group">
-                <div class="flex items-center justify-between">
-                    <span class="text-[10px] sm:text-xs font-medium text-slate-400 uppercase tracking-wider">Total</span>
-                    <div class="p-1.5 sm:p-2 rounded-lg sm:rounded-xl bg-slate-800/80 text-slate-300">
-                        <i data-lucide="server" class="w-3.5 h-3.5 sm:w-4 sm:h-4"></i>
-                    </div>
+    <main class="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-8">
+        <section id="login-hero-view" class="max-w-3xl mx-auto my-8 sm:my-14 text-center space-y-6">
+            <h2 class="text-3xl sm:text-5xl font-extrabold tracking-tight text-white leading-tight">
+                Keep Your Free Render Deployments <br class="hidden sm:inline">
+                <span class="bg-gradient-to-r from-orange-400 via-amber-300 to-emerald-400 bg-clip-text text-transparent">Awake 24 Hours / 7 Days</span>
+            </h2>
+            <p class="text-slate-300 text-sm sm:text-base max-w-2xl mx-auto leading-relaxed">
+                Log in with your Google Account to manage your private list of Render apps.
+            </p>
+            <div class="glass-panel p-6 sm:p-8 rounded-2xl sm:rounded-3xl border border-slate-700/80 shadow-2xl max-w-md mx-auto space-y-5 mt-6">
+                <h3 class="text-base font-bold text-white">Sign In to Your Dashboard</h3>
+                <div class="flex justify-center pt-2">
+                    <div id="g_id_signin_container"></div>
                 </div>
-                <div class="mt-2 sm:mt-3 flex items-baseline gap-1 sm:gap-2">
+            </div>
+        </section>
+
+        <div id="authenticated-dashboard" class="hidden space-y-4 sm:space-y-6">
+            <section class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5 sm:gap-4">
+                <div class="glass-panel p-3.5 sm:p-5 rounded-xl sm:rounded-2xl relative overflow-hidden group">
+                    <span class="text-[10px] sm:text-xs font-medium text-slate-400 uppercase tracking-wider block">Total</span>
                     <span id="metric-total" class="text-2xl sm:text-3xl font-extrabold text-white font-mono">0</span>
-                    <span class="text-[10px] sm:text-xs text-slate-400">endpoints</span>
                 </div>
-            </div>
-
-            <div class="glass-panel p-3.5 sm:p-5 rounded-xl sm:rounded-2xl relative overflow-hidden group border-emerald-500/20">
-                <div class="flex items-center justify-between">
-                    <span class="text-[10px] sm:text-xs font-medium text-emerald-400 uppercase tracking-wider">Awake</span>
-                    <div class="p-1.5 sm:p-2 rounded-lg sm:rounded-xl bg-emerald-950/60 text-emerald-400 border border-emerald-500/20">
-                        <i data-lucide="check-circle-2" class="w-3.5 h-3.5 sm:w-4 sm:h-4"></i>
-                    </div>
-                </div>
-                <div class="mt-2 sm:mt-3 flex items-baseline gap-1 sm:gap-2">
+                <div class="glass-panel p-3.5 sm:p-5 rounded-xl sm:rounded-2xl relative overflow-hidden group border-emerald-500/20">
+                    <span class="text-[10px] sm:text-xs font-medium text-emerald-400 uppercase tracking-wider block">Awake</span>
                     <span id="metric-alive" class="text-2xl sm:text-3xl font-extrabold text-emerald-400 font-mono">0</span>
-                    <span class="text-[10px] sm:text-xs text-slate-400">online</span>
                 </div>
-            </div>
-
-            <div class="glass-panel p-3.5 sm:p-5 rounded-xl sm:rounded-2xl relative overflow-hidden group border-amber-500/20">
-                <div class="flex items-center justify-between">
-                    <span class="text-[10px] sm:text-xs font-medium text-amber-400 uppercase tracking-wider">Waking</span>
-                    <div class="p-1.5 sm:p-2 rounded-lg sm:rounded-xl bg-amber-950/60 text-amber-400 border border-amber-500/20">
-                        <i data-lucide="loader-2" class="w-3.5 h-3.5 sm:w-4 sm:h-4"></i>
-                    </div>
+                <div class="glass-panel p-3.5 sm:p-5 rounded-xl sm:rounded-2xl relative overflow-hidden group border-slate-700/60">
+                    <span class="text-[10px] sm:text-xs font-medium text-amber-300 uppercase tracking-wider block">Paused</span>
+                    <span id="metric-paused" class="text-2xl sm:text-3xl font-extrabold text-amber-300 font-mono">0</span>
                 </div>
-                <div class="mt-2 sm:mt-3 flex items-baseline gap-1 sm:gap-2">
+                <div class="glass-panel p-3.5 sm:p-5 rounded-xl sm:rounded-2xl relative overflow-hidden group border-amber-500/20">
+                    <span class="text-[10px] sm:text-xs font-medium text-amber-400 uppercase tracking-wider block">Waking</span>
                     <span id="metric-waking" class="text-2xl sm:text-3xl font-extrabold text-amber-400 font-mono">0</span>
-                    <span class="text-[10px] sm:text-xs text-slate-400">cold boot</span>
                 </div>
-            </div>
-
-            <div class="glass-panel p-3.5 sm:p-5 rounded-xl sm:rounded-2xl relative overflow-hidden group border-rose-500/20">
-                <div class="flex items-center justify-between">
-                    <span class="text-[10px] sm:text-xs font-medium text-rose-400 uppercase tracking-wider">Offline</span>
-                    <div class="p-1.5 sm:p-2 rounded-lg sm:rounded-xl bg-rose-950/60 text-rose-400 border border-rose-500/20">
-                        <i data-lucide="alert-triangle" class="w-3.5 h-3.5 sm:w-4 sm:h-4"></i>
-                    </div>
-                </div>
-                <div class="mt-2 sm:mt-3 flex items-baseline gap-1 sm:gap-2">
+                <div class="glass-panel p-3.5 sm:p-5 rounded-xl sm:rounded-2xl relative overflow-hidden group border-rose-500/20 col-span-2 sm:col-span-1">
+                    <span class="text-[10px] sm:text-xs font-medium text-rose-400 uppercase tracking-wider block">Offline</span>
                     <span id="metric-failed" class="text-2xl sm:text-3xl font-extrabold text-rose-400 font-mono">0</span>
-                    <span class="text-[10px] sm:text-xs text-slate-400">failed</span>
                 </div>
-            </div>
-        </section>
+            </section>
 
-        <section class="glass-panel p-4 sm:p-6 rounded-xl sm:rounded-2xl shadow-xl shadow-black/40">
-            <div class="flex items-center gap-2 mb-3 sm:mb-4">
-                <i data-lucide="plus-circle" class="w-4 h-4 sm:w-5 sm:h-5 text-orange-400"></i>
-                <h2 class="text-sm sm:text-base font-bold text-white">Register Target Render Deployment</h2>
-            </div>
-            
-            <form id="add-url-form" onsubmit="handleAddUrl(event)" class="grid grid-cols-1 md:grid-cols-12 gap-3 sm:gap-4 items-end">
-                <div class="md:col-span-4">
-                    <label for="project-name" class="block text-xs font-medium text-slate-300 mb-1">
-                        Project Name <span class="text-rose-400">*</span>
-                    </label>
-                    <div class="relative">
-                        <span class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-slate-500">
-                            <i data-lucide="box" class="w-4 h-4"></i>
-                        </span>
-                        <input type="text" id="project-name" required placeholder="e.g. Pharmacy POS Backend" 
-                               class="w-full h-11 bg-slate-900/90 border border-slate-700/80 rounded-xl pl-9 pr-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent transition">
+            <section class="glass-panel p-4 sm:p-6 rounded-xl sm:rounded-2xl shadow-xl">
+                <form id="add-url-form" onsubmit="handleAddUrl(event)" class="grid grid-cols-1 md:grid-cols-12 gap-3 sm:gap-4 items-end">
+                    <div class="md:col-span-4">
+                        <label class="block text-xs font-medium text-slate-300 mb-1">Project Name</label>
+                        <input type="text" id="project-name" required placeholder="e.g. Pharmacy POS Backend" class="w-full h-11 bg-slate-900 border border-slate-700 rounded-xl px-3 text-sm text-white">
                     </div>
-                </div>
-
-                <div class="md:col-span-6">
-                    <label for="target-url" class="block text-xs font-medium text-slate-300 mb-1">
-                        Render URL (Health Check Endpoint) <span class="text-rose-400">*</span>
-                    </label>
-                    <div class="relative">
-                        <span class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-slate-500">
-                            <i data-lucide="globe" class="w-4 h-4"></i>
-                        </span>
-                        <input type="text" id="target-url" required placeholder="https://my-backend.onrender.com/" 
-                               class="w-full h-11 bg-slate-900/90 border border-slate-700/80 rounded-xl pl-9 pr-3 text-sm text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent transition">
+                    <div class="md:col-span-6">
+                        <label class="block text-xs font-medium text-slate-300 mb-1">Render URL</label>
+                        <input type="text" id="target-url" required placeholder="https://my-backend.onrender.com/" class="w-full h-11 bg-slate-900 border border-slate-700 rounded-xl px-3 text-sm text-white font-mono">
                     </div>
-                </div>
-
-                <div class="md:col-span-2">
-                    <button type="submit" id="btn-submit-url" class="w-full h-11 inline-flex items-center justify-center gap-2 px-4 rounded-xl font-semibold text-sm bg-gradient-to-r from-orange-600 to-amber-600 hover:from-orange-500 hover:to-amber-500 text-white shadow-lg shadow-orange-950/50 transition active:scale-[0.98] cursor-pointer">
-                        <i data-lucide="plus" class="w-4 h-4"></i>
-                        <span>Monitor URL</span>
-                    </button>
-                </div>
-            </form>
-        </section>
-
-        <section class="glass-panel rounded-xl sm:rounded-2xl overflow-hidden shadow-xl shadow-black/40">
-            <div class="px-4 sm:px-6 py-3.5 sm:py-4 border-b border-slate-800 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
-                <div class="flex items-center justify-between sm:justify-start gap-2">
-                    <div class="flex items-center gap-2">
-                        <i data-lucide="list-checks" class="w-4 h-4 sm:w-5 sm:h-5 text-orange-400"></i>
-                        <h2 class="text-sm sm:text-base font-bold text-white">Active Monitored Targets</h2>
+                    <div class="md:col-span-2">
+                        <button type="submit" id="btn-submit-url" class="w-full h-11 rounded-xl bg-orange-600 hover:bg-orange-500 font-semibold text-sm text-white">Monitor URL</button>
                     </div>
-                    <span id="badge-count" class="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 font-mono">0 items</span>
-                </div>
-                
-                <div class="w-full sm:w-64 relative">
-                    <span class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-slate-500">
-                        <i data-lucide="search" class="w-3.5 h-3.5"></i>
-                    </span>
-                    <input type="text" id="filter-input" oninput="filterUrls()" placeholder="Search project or URL..." 
-                           class="w-full h-9 bg-slate-900 border border-slate-800 rounded-lg pl-8 pr-3 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-orange-500">
-                </div>
-            </div>
+                </form>
+            </section>
 
-            <div id="mobile-cards-container" class="block md:hidden divide-y divide-slate-800/80 p-2 sm:p-3 space-y-3"></div>
-
-            <div class="hidden md:block overflow-x-auto">
-                <table class="w-full text-left text-sm">
-                    <thead class="bg-slate-900/70 border-b border-slate-800 text-xs font-semibold text-slate-400 uppercase tracking-wider">
-                        <tr>
-                            <th scope="col" class="px-6 py-3.5">Project</th>
-                            <th scope="col" class="px-6 py-3.5">Target URL</th>
-                            <th scope="col" class="px-6 py-3.5">Live Status</th>
-                            <th scope="col" class="px-6 py-3.5">Latency</th>
-                            <th scope="col" class="px-6 py-3.5">Last Checked</th>
-                            <th scope="col" class="px-6 py-3.5 text-right">Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody id="url-table-body" class="divide-y divide-slate-800/60 font-normal"></tbody>
-                </table>
-            </div>
-
-            <div id="empty-state-view" class="hidden px-4 py-12 text-center text-slate-500">
-                <div class="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-slate-900/80 border border-slate-800 text-slate-400 mb-3">
-                    <i data-lucide="radio" class="w-6 h-6"></i>
+            <section class="glass-panel rounded-xl sm:rounded-2xl overflow-hidden">
+                <div id="mobile-cards-container" class="block md:hidden p-3 space-y-3"></div>
+                <div class="hidden md:block overflow-x-auto">
+                    <table class="w-full text-left text-sm">
+                        <thead class="bg-slate-900/70 border-b border-slate-800 text-xs font-semibold text-slate-400 uppercase">
+                            <tr>
+                                <th class="px-6 py-3.5">Project</th>
+                                <th class="px-6 py-3.5">Target URL</th>
+                                <th class="px-6 py-3.5">Live Status</th>
+                                <th class="px-6 py-3.5">Latency</th>
+                                <th class="px-6 py-3.5">Last Checked</th>
+                                <th class="px-6 py-3.5 text-right">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="url-table-body" class="divide-y divide-slate-800/60"></tbody>
+                    </table>
                 </div>
-                <h3 class="text-sm font-semibold text-slate-300">No Target URLs Registered</h3>
-                <p class="text-xs text-slate-500 mt-1 max-w-sm mx-auto">Add your Render web services above. Cloudflare Native Edge Crons will keep them awake 24/7.</p>
-            </div>
-        </section>
+                <div id="empty-state-view" class="hidden px-4 py-12 text-center text-slate-500">
+                    <p class="text-xs text-slate-500">No Target URLs Registered yet in your account.</p>
+                </div>
+            </section>
+        </div>
     </main>
-
-    <footer class="border-t border-slate-900 py-6 text-center text-xs text-slate-500 px-4">
-        <p>Render 24/7 Keep-Alive Hub &bull; Running on Cloudflare Workers &bull; Neon PostgreSQL</p>
-    </footer>
 
     <div id="toast-container" class="fixed bottom-4 inset-x-3 sm:inset-x-auto sm:right-5 z-50 flex flex-col gap-2 pointer-events-none"></div>
 
     <script>
+        const GOOGLE_CLIENT_ID = '` + GOOGLE_CLIENT_ID + `';
         let allUrls = [];
         let refreshTimer = null;
         let countdown = 15;
+        let currentUser = null;
+        let authToken = localStorage.getItem('keepalive_google_token') || null;
 
-        document.addEventListener('DOMContentLoaded', () => {
+        window.onload = function () {
             lucide.createIcons();
-            fetchData();
-            startCountdown();
-        });
+            initGoogleAuth();
+            if (authToken) restoreSession();
+            else showLoggedOutUI();
+        };
+
+        function initGoogleAuth() {
+            if (typeof google === 'undefined' || !google.accounts || !google.accounts.id) {
+                setTimeout(initGoogleAuth, 300);
+                return;
+            }
+            google.accounts.id.initialize({
+                client_id: GOOGLE_CLIENT_ID,
+                callback: handleGoogleCredentialResponse,
+                auto_select: false,
+            });
+            renderGoogleSignInButton();
+        }
+
+        function renderGoogleSignInButton() {
+            const container = document.getElementById('g_id_signin_container');
+            if (container && typeof google !== 'undefined' && google.accounts && google.accounts.id) {
+                google.accounts.id.renderButton(container, {
+                    theme: 'outline',
+                    size: 'large',
+                    type: 'standard',
+                    text: 'continue_with',
+                    shape: 'pill',
+                    width: 280
+                });
+            }
+        }
+
+        function promptGoogleSignIn() {
+            if (typeof google !== 'undefined' && google.accounts && google.accounts.id) {
+                google.accounts.id.prompt();
+            }
+        }
+
+        async function handleGoogleCredentialResponse(response) {
+            if (!response || !response.credential) return;
+            authToken = response.credential;
+            localStorage.setItem('keepalive_google_token', authToken);
+            await restoreSession();
+        }
+
+        async function restoreSession() {
+            if (!authToken) { showLoggedOutUI(); return; }
+            try {
+                const res = await fetch('/api/me', { headers: { 'Authorization': 'Bearer ' + authToken } });
+                if (!res.ok) throw new Error('Session expired');
+                const data = await res.json();
+                currentUser = data.user;
+                showLoggedInUI(currentUser);
+                fetchData();
+                startCountdown();
+            } catch (err) {
+                authToken = null;
+                currentUser = null;
+                localStorage.removeItem('keepalive_google_token');
+                showLoggedOutUI();
+            }
+        }
+
+        function handleSignOut() {
+            if (typeof google !== 'undefined' && google.accounts && google.accounts.id) {
+                google.accounts.id.disableAutoSelect();
+            }
+            authToken = null;
+            currentUser = null;
+            localStorage.removeItem('keepalive_google_token');
+            if (refreshTimer) clearInterval(refreshTimer);
+            showLoggedOutUI();
+        }
+
+        function showLoggedInUI(user) {
+            document.getElementById('login-hero-view').classList.add('hidden');
+            document.getElementById('authenticated-dashboard').classList.remove('hidden');
+            document.getElementById('auth-controls').classList.remove('hidden');
+            document.getElementById('unauth-header-btn').classList.add('hidden');
+            document.getElementById('user-name').innerText = user.name || 'User';
+            document.getElementById('user-email').innerText = user.email || '';
+            const avatarElem = document.getElementById('user-avatar');
+            if (user.picture) {
+                avatarElem.src = user.picture;
+                avatarElem.classList.remove('hidden');
+            }
+            lucide.createIcons();
+        }
+
+        function showLoggedOutUI() {
+            document.getElementById('login-hero-view').classList.remove('hidden');
+            document.getElementById('authenticated-dashboard').classList.add('hidden');
+            document.getElementById('auth-controls').classList.add('hidden');
+            document.getElementById('unauth-header-btn').classList.remove('hidden');
+            renderGoogleSignInButton();
+            lucide.createIcons();
+        }
+
+        function getAuthHeaders() {
+            return { 'Authorization': 'Bearer ' + authToken, 'Content-Type': 'application/json' };
+        }
 
         async function fetchData(manual = false) {
-            const icon = document.getElementById('refresh-icon');
-            if (manual && icon) icon.classList.add('animate-spin');
-
+            if (!authToken) return;
             try {
                 const [urlsRes, statsRes] = await Promise.all([
-                    fetch('/api/urls'),
-                    fetch('/api/stats')
+                    fetch('/api/urls', { headers: getAuthHeaders() }),
+                    fetch('/api/stats', { headers: getAuthHeaders() })
                 ]);
-
-                if (!urlsRes.ok || !statsRes.ok) throw new Error('Failed to fetch data');
-
+                if (urlsRes.status === 401 || statsRes.status === 401) { handleSignOut(); return; }
                 allUrls = await urlsRes.json();
                 const stats = await statsRes.json();
-
                 updateStats(stats);
                 renderAll(allUrls);
                 countdown = 15;
-
-                if (manual) showToast('Data synchronized successfully', 'info');
             } catch (err) {
-                console.error('Fetch error:', err);
-                if (manual) showToast('Failed to connect to Cloudflare Worker API.', 'error');
-            } finally {
-                if (icon) setTimeout(() => icon.classList.remove('animate-spin'), 600);
+                console.error(err);
             }
         }
 
         function startCountdown() {
             if (refreshTimer) clearInterval(refreshTimer);
             refreshTimer = setInterval(() => {
+                if (!authToken) return;
                 countdown--;
                 const elem = document.getElementById('refresh-countdown');
                 if (elem) elem.innerText = countdown + 's';
-
-                if (countdown <= 0) {
-                    countdown = 15;
-                    fetchData();
-                }
+                if (countdown <= 0) { countdown = 15; fetchData(); }
             }, 1000);
         }
 
         function updateStats(stats) {
             document.getElementById('metric-total').innerText = stats.total || 0;
             document.getElementById('metric-alive').innerText = stats.alive || 0;
+            document.getElementById('metric-paused').innerText = stats.paused || 0;
             document.getElementById('metric-waking').innerText = stats.waking || 0;
             document.getElementById('metric-failed').innerText = stats.failed || 0;
-            document.getElementById('badge-count').innerText = (stats.total || 0) + ' items';
         }
 
         function formatRelativeTime(isoString) {
             if (!isoString) return 'Never checked';
-            const date = new Date(isoString);
-            const now = new Date();
-            const diffSeconds = Math.floor((now - date) / 1000);
-
-            if (diffSeconds < 5) return 'Just now';
+            const diffSeconds = Math.floor((new Date() - new Date(isoString)) / 1000);
             if (diffSeconds < 60) return diffSeconds + 's ago';
             const diffMins = Math.floor(diffSeconds / 60);
             if (diffMins < 60) return diffMins + 'm ago';
-            const diffHours = Math.floor(diffMins / 60);
-            if (diffHours < 24) return diffHours + 'h ago';
-            return date.toLocaleDateString();
+            return Math.floor(diffMins / 60) + 'h ago';
         }
 
-        function getStatusBadge(status, httpCode) {
-            if (!status || status === 'Pending Initial Ping') {
-                return '<span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 sm:py-1 rounded-full text-[11px] sm:text-xs font-semibold bg-slate-800 text-slate-300 border border-slate-700"><span class="w-1.5 h-1.5 rounded-full bg-slate-400"></span> Pending</span>';
+        function getStatusBadge(status, httpCode, isActive = true) {
+            if (!isActive || status === 'Paused') {
+                return '<span class="px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/30">Paused</span>';
             }
             if (status.startsWith('Active')) {
-                return '<span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 sm:py-1 rounded-full text-[11px] sm:text-xs font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 shadow-sm shadow-emerald-500/10"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span> ' + status + '</span>';
+                return '<span class="px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">' + status + '</span>';
             }
-            if (status.includes('Waking') || status.includes('Redirect')) {
-                return '<span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 sm:py-1 rounded-full text-[11px] sm:text-xs font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/30 shadow-sm shadow-amber-500/10"><span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span> ' + status + '</span>';
-            }
-            return '<span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 sm:py-1 rounded-full text-[11px] sm:text-xs font-semibold bg-rose-500/15 text-rose-400 border border-rose-500/30 shadow-sm shadow-rose-500/10"><span class="w-1.5 h-1.5 rounded-full bg-rose-400"></span> ' + status + '</span>';
-        }
-
-        function getLatencyBadge(ms) {
-            if (ms === null || ms === undefined) return '<span class="text-slate-500 font-mono text-xs">--</span>';
-            let color = 'text-emerald-400';
-            if (ms > 1000) color = 'text-amber-400';
-            if (ms > 4000) color = 'text-rose-400';
-            return '<span class="font-mono text-xs font-medium ' + color + '">' + ms + ' ms</span>';
+            return '<span class="px-2 py-0.5 rounded-full text-xs font-semibold bg-rose-500/15 text-rose-400 border border-rose-500/30">' + status + '</span>';
         }
 
         function renderAll(urls) {
             const emptyView = document.getElementById('empty-state-view');
             const tbody = document.getElementById('url-table-body');
             const mobileContainer = document.getElementById('mobile-cards-container');
-
             if (!urls || urls.length === 0) {
                 emptyView.classList.remove('hidden');
                 tbody.innerHTML = '';
                 mobileContainer.innerHTML = '';
-                lucide.createIcons();
                 return;
             }
-
             emptyView.classList.add('hidden');
 
             mobileContainer.innerHTML = urls.map(item => \`
-                <div class="glass-panel p-4 rounded-xl border border-slate-800/90 space-y-3">
-                    <div class="flex items-start justify-between gap-2">
+                <div class="glass-panel p-4 rounded-xl space-y-2">
+                    <div class="flex justify-between items-start">
                         <div>
-                            <h3 class="font-bold text-slate-100 text-sm">\${escapeHtml(item.name)}</h3>
-                            <span class="text-[11px] text-slate-500">Added \${formatRelativeTime(item.created_at)}</span>
+                            <h3 class="font-bold text-sm text-white">\${escapeHtml(item.name)}</h3>
+                            <span class="text-[10px] text-slate-400">\${formatRelativeTime(item.created_at)}</span>
                         </div>
-                        <div>\${getStatusBadge(item.status, item.http_code)}</div>
+                        \${getStatusBadge(item.status, item.http_code, item.is_active)}
                     </div>
-                    <div class="bg-slate-900/80 border border-slate-800 rounded-lg p-2.5 flex items-center justify-between gap-2">
-                        <a href="\${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" class="font-mono text-xs text-orange-400 hover:underline truncate">
-                            \${escapeHtml(item.url)}
-                        </a>
-                        <div class="flex items-center gap-1 shrink-0">
-                            <button onclick="copyToClipboard('\${escapeHtml(item.url)}')" title="Copy URL" class="p-1.5 text-slate-400 hover:text-white rounded bg-slate-800 cursor-pointer">
-                                <i data-lucide="copy" class="w-3.5 h-3.5"></i>
-                            </button>
-                            <a href="\${escapeHtml(item.url)}" target="_blank" class="p-1.5 text-slate-400 hover:text-white rounded bg-slate-800">
-                                <i data-lucide="external-link" class="w-3.5 h-3.5"></i>
-                            </a>
-                        </div>
-                    </div>
-                    <div class="grid grid-cols-2 gap-2 text-xs py-1 border-t border-slate-800/60">
-                        <div>
-                            <span class="text-slate-500 block text-[10px] uppercase">Latency</span>
-                            \${getLatencyBadge(item.response_time_ms)}
-                        </div>
-                        <div>
-                            <span class="text-slate-500 block text-[10px] uppercase">Last Checked</span>
-                            <span class="text-slate-300 font-medium">\${formatRelativeTime(item.last_ping)}</span>
-                        </div>
-                    </div>
-                    <div class="grid grid-cols-2 gap-2 pt-1">
-                        <button onclick="triggerPing(\${item.id}, this)" class="w-full h-9 inline-flex items-center justify-center gap-1.5 rounded-lg bg-orange-600/20 hover:bg-orange-600/30 text-orange-300 border border-orange-500/30 text-xs font-semibold active:scale-95 transition cursor-pointer">
-                            <i data-lucide="zap" class="w-3.5 h-3.5"></i>
-                            <span>Ping Now</span>
-                        </button>
-                        <button onclick="deleteUrl(\${item.id}, '\${escapeHtml(item.name)}')" class="w-full h-9 inline-flex items-center justify-center gap-1.5 rounded-lg bg-rose-600/15 hover:bg-rose-600/25 text-rose-300 border border-rose-500/30 text-xs font-semibold active:scale-95 transition cursor-pointer">
-                            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
-                            <span>Delete</span>
-                        </button>
+                    <div class="font-mono text-xs text-orange-400 truncate">\${escapeHtml(item.url)}</div>
+                    <div class="grid grid-cols-3 gap-1 pt-2">
+                        <button onclick="toggleActive(\${item.id}, this)" class="h-8 rounded bg-slate-800 text-xs font-medium text-amber-300">\${item.is_active ? 'Pause' : 'Start'}</button>
+                        <button onclick="triggerPing(\${item.id}, this)" class="h-8 rounded bg-orange-600/20 text-xs font-medium text-orange-300">Ping</button>
+                        <button onclick="deleteUrl(\${item.id}, '\${escapeHtml(item.name)}')" class="h-8 rounded bg-rose-600/15 text-xs font-medium text-rose-300">Delete</button>
                     </div>
                 </div>
             \`).join('');
 
             tbody.innerHTML = urls.map(item => \`
-                <tr class="hover:bg-slate-900/50 transition duration-150 group">
-                    <td class="px-6 py-4 whitespace-nowrap">
-                        <div class="font-semibold text-slate-200">\${escapeHtml(item.name)}</div>
-                        <div class="text-[11px] text-slate-500">Added \${formatRelativeTime(item.created_at)}</div>
-                    </td>
-                    <td class="px-6 py-4 max-w-xs truncate">
-                        <div class="flex items-center gap-2">
-                            <a href="\${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" class="font-mono text-xs text-orange-400 hover:underline truncate">
-                                \${escapeHtml(item.url)}
-                            </a>
-                            <button onclick="copyToClipboard('\${escapeHtml(item.url)}')" title="Copy URL" class="text-slate-500 hover:text-slate-300 opacity-0 group-hover:opacity-100 transition cursor-pointer">
-                                <i data-lucide="copy" class="w-3.5 h-3.5"></i>
-                            </button>
-                        </div>
-                    </td>
-                    <td class="px-6 py-4 whitespace-nowrap">\${getStatusBadge(item.status, item.http_code)}</td>
-                    <td class="px-6 py-4 whitespace-nowrap">\${getLatencyBadge(item.response_time_ms)}</td>
-                    <td class="px-6 py-4 whitespace-nowrap text-xs text-slate-400">\${formatRelativeTime(item.last_ping)}</td>
-                    <td class="px-6 py-4 whitespace-nowrap text-right text-xs font-medium space-x-2">
-                        <button onclick="triggerPing(\${item.id}, this)" class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-orange-600 text-slate-300 hover:text-white border border-slate-700 transition cursor-pointer">
-                            <i data-lucide="zap" class="w-3.5 h-3.5"></i>
-                            <span>Ping</span>
-                        </button>
-                        <button onclick="deleteUrl(\${item.id}, '\${escapeHtml(item.name)}')" class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-rose-600 text-slate-300 hover:text-white border border-slate-700 transition cursor-pointer">
-                            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
-                        </button>
+                <tr class="hover:bg-slate-900/50">
+                    <td class="px-6 py-4 font-semibold text-white">\${escapeHtml(item.name)}</td>
+                    <td class="px-6 py-4 font-mono text-xs text-orange-400 truncate max-w-xs">\${escapeHtml(item.url)}</td>
+                    <td class="px-6 py-4">\${getStatusBadge(item.status, item.http_code, item.is_active)}</td>
+                    <td class="px-6 py-4 text-xs font-mono text-emerald-400">\${item.response_time_ms ? item.response_time_ms + ' ms' : '--'}</td>
+                    <td class="px-6 py-4 text-xs text-slate-400">\${formatRelativeTime(item.last_ping)}</td>
+                    <td class="px-6 py-4 text-right space-x-1">
+                        <button onclick="toggleActive(\${item.id}, this)" class="px-2 py-1 rounded bg-slate-800 text-xs text-amber-300">\${item.is_active ? 'Pause' : 'Start'}</button>
+                        <button onclick="triggerPing(\${item.id}, this)" class="px-2 py-1 rounded bg-slate-800 text-xs text-orange-300">Ping</button>
+                        <button onclick="deleteUrl(\${item.id}, '\${escapeHtml(item.name)}')" class="px-2 py-1 rounded bg-slate-800 text-xs text-rose-300">Delete</button>
                     </td>
                 </tr>
             \`).join('');
-
             lucide.createIcons();
+        }
+
+        async function toggleActive(id, btn) {
+            btn.disabled = true;
+            try {
+                const res = await fetch('/api/urls/' + id + '/toggle', { method: 'POST', headers: getAuthHeaders() });
+                const data = await res.json();
+                fetchData();
+            } finally { btn.disabled = false; }
         }
 
         async function handleAddUrl(event) {
             event.preventDefault();
             const name = document.getElementById('project-name').value.trim();
             const url = document.getElementById('target-url').value.trim();
-            const submitBtn = document.getElementById('btn-submit-url');
-
-            submitBtn.disabled = true;
-            submitBtn.innerHTML = '<span>Adding...</span>';
-
             try {
                 const res = await fetch('/api/urls', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: getAuthHeaders(),
                     body: JSON.stringify({ name, url })
                 });
-                const data = await res.json();
-                if (!res.ok) throw new Error(data.detail || 'Failed');
-                showToast(data.message || 'Added successfully!', 'success');
                 document.getElementById('project-name').value = '';
                 document.getElementById('target-url').value = '';
                 fetchData();
-            } catch (err) {
-                showToast(err.message, 'error');
-            } finally {
-                submitBtn.disabled = false;
-                submitBtn.innerHTML = '<i data-lucide="plus" class="w-4 h-4"></i><span>Monitor URL</span>';
-                lucide.createIcons();
-            }
+            } catch (err) { alert(err.message); }
         }
 
         async function triggerPing(id, btn) {
             btn.disabled = true;
             try {
-                const res = await fetch('/api/ping/' + id, { method: 'POST' });
-                const data = await res.json();
-                showToast('Pinged target: ' + data.data.status, 'success');
+                await fetch('/api/ping/' + id, { method: 'POST', headers: getAuthHeaders() });
                 fetchData();
-            } catch (err) {
-                showToast('Ping error: ' + err.message, 'error');
-            } finally {
-                btn.disabled = false;
-            }
+            } finally { btn.disabled = false; }
         }
 
         async function triggerPingAll() {
-            try {
-                const res = await fetch('/api/ping-all', { method: 'POST' });
-                const data = await res.json();
-                showToast(data.message, 'info');
-                setTimeout(fetchData, 2000);
-            } catch (err) {
-                showToast('Error: ' + err.message, 'error');
-            }
+            await fetch('/api/ping-all', { method: 'POST', headers: getAuthHeaders() });
+            setTimeout(fetchData, 2000);
         }
 
         async function deleteUrl(id, name) {
             if (!confirm('Stop monitoring ' + name + '?')) return;
-            try {
-                const res = await fetch('/api/urls/' + id, { method: 'DELETE' });
-                showToast('Removed ' + name, 'info');
-                fetchData();
-            } catch (err) {
-                showToast('Delete failed: ' + err.message, 'error');
-            }
-        }
-
-        function filterUrls() {
-            const q = document.getElementById('filter-input').value.toLowerCase();
-            renderAll(allUrls.filter(u => u.name.toLowerCase().includes(q) || u.url.toLowerCase().includes(q)));
-        }
-
-        function copyToClipboard(text) {
-            navigator.clipboard.writeText(text).then(() => showToast('Copied to clipboard', 'info'));
+            await fetch('/api/urls/' + id, { method: 'DELETE', headers: getAuthHeaders() });
+            fetchData();
         }
 
         function escapeHtml(str) {
             if (!str) return '';
             return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
-        }
-
-        function showToast(message, type = 'info') {
-            const container = document.getElementById('toast-container');
-            const toast = document.createElement('div');
-            toast.className = 'pointer-events-auto flex items-center gap-2.5 px-4 py-3 rounded-xl text-xs font-medium shadow-2xl backdrop-blur-md border transition-all duration-300 ' + (
-                type === 'success' ? 'bg-emerald-950/95 text-emerald-200 border-emerald-500/40' :
-                type === 'error' ? 'bg-rose-950/95 text-rose-200 border-rose-500/40' :
-                'bg-slate-900/95 text-slate-200 border-slate-700/80'
-            );
-            toast.innerHTML = '<span>' + escapeHtml(message) + '</span>';
-            container.appendChild(toast);
-            setTimeout(() => toast.remove(), 3500);
         }
     </script>
 </body>

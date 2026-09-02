@@ -1,41 +1,26 @@
-"""
-Render 24/7 Keep-Alive Hub
-Automated HTTP health check and cold-start prevention service for Render free-tier deployments.
-Powered by FastAPI, SQLAlchemy (Neon PostgreSQL), APScheduler, and HTTPX.
-"""
-
 import os
 import time
 import logging
 import asyncio
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Optional, List
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Request, Depends, status, Header
 from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, HttpUrl, field_validator
-from sqlalchemy import (
-    create_engine,
-    Column,
-    Integer,
-    String,
-    DateTime,
-    Float,
-    desc,
-    text
-)
-from sqlalchemy.orm import declarative_base, sessionmaker, Session
-# pyrefly: ignore [missing-import]
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, text, desc
+from sqlalchemy.orm import declarative_base, sessionmaker, Session, relationship
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-# pyrefly: ignore [missing-import]
 from apscheduler.triggers.cron import CronTrigger
 
-# Load environment variables
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
+
 load_dotenv()
 
 # Setup logging
@@ -49,14 +34,18 @@ logger = logging.getLogger("KeepAliveHub")
 DEFAULT_DB_URL = "postgresql://neondb_owner:npg_aKMVL6bok7gm@ep-floral-lab-aehhbt84-pooler.c-2.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
 DATABASE_URL = os.getenv("DATABASE_URL", DEFAULT_DB_URL)
 
-# Normalize SQLAlchemy connection string for postgresql
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+GOOGLE_CLIENT_ID = os.getenv(
+    "GOOGLE_CLIENT_ID",
+    "1015295193209-pqllnd3a5d5m1m11nu4hvkvfdpbapm87.apps.googleusercontent.com"
+)
 
 PING_INTERVAL_MINUTES = int(os.getenv("PING_INTERVAL_MINUTES", "10"))
 HTTP_TIMEOUT_SECONDS = float(os.getenv("HTTP_TIMEOUT_SECONDS", "15.0"))
 
-# SQLAlchemy Engine & Session with Neon-friendly pooling settings
+# SQLAlchemy Engine & Session with Neon pooling settings
 engine = create_engine(
     DATABASE_URL,
     pool_pre_ping=True,      # Automatically verify connection liveness
@@ -71,21 +60,51 @@ Base = declarative_base()
 # -----------------------------------------------------------------------------
 # Database Models
 # -----------------------------------------------------------------------------
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    google_id = Column(String(255), unique=True, index=True, nullable=False)
+    email = Column(String(255), index=True, nullable=False)
+    name = Column(String(255), nullable=True)
+    picture = Column(String(1024), nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    urls = relationship("MonitoredURL", back_populates="owner", cascade="all, delete-orphan")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "google_id": self.google_id,
+            "email": self.email,
+            "name": self.name,
+            "picture": self.picture,
+            "created_at": self.created_at.isoformat() if self.created_at else None
+        }
+
+
 class MonitoredURL(Base):
     __tablename__ = "monitored_urls"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    user_email = Column(String(255), nullable=True, index=True)
     name = Column(String(255), nullable=False)
-    url = Column(String(1024), unique=True, nullable=False, index=True)
+    url = Column(String(1024), nullable=False, index=True)
     status = Column(String(100), default="Pending Initial Ping")
     last_ping = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     response_time_ms = Column(Integer, nullable=True)
     http_code = Column(Integer, nullable=True)
+    is_active = Column(Boolean, default=True, nullable=False)
+
+    owner = relationship("User", back_populates="urls")
 
     def to_dict(self):
         return {
             "id": self.id,
+            "user_id": self.user_id,
+            "user_email": self.user_email,
             "name": self.name,
             "url": self.url,
             "status": self.status,
@@ -93,13 +112,34 @@ class MonitoredURL(Base):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "response_time_ms": self.response_time_ms,
             "http_code": self.http_code,
+            "is_active": self.is_active,
         }
 
 
-# Auto-create tables on import/startup
+# Auto-create tables & schema migration on startup
 def init_db():
     try:
         Base.metadata.create_all(bind=engine)
+        with engine.connect() as conn:
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id SERIAL PRIMARY KEY,
+                    google_id VARCHAR(255) UNIQUE NOT NULL,
+                    email VARCHAR(255) NOT NULL,
+                    name VARCHAR(255),
+                    picture VARCHAR(1024),
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                );
+            """))
+            conn.execute(text("ALTER TABLE monitored_urls ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;"))
+            conn.execute(text("ALTER TABLE monitored_urls ADD COLUMN IF NOT EXISTS user_id INT;"))
+            conn.execute(text("ALTER TABLE monitored_urls ADD COLUMN IF NOT EXISTS user_email VARCHAR(255);"))
+            # Drop unique constraint on URL column if it was globally unique, so different users can monitor the same endpoint if they want
+            try:
+                conn.execute(text("ALTER TABLE monitored_urls DROP CONSTRAINT IF EXISTS monitored_urls_url_key;"))
+            except Exception:
+                pass
+            conn.commit()
         logger.info("Database schema verified and tables ensured.")
     except Exception as e:
         logger.error(f"Error initializing database schema: {e}")
@@ -112,6 +152,109 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+# -----------------------------------------------------------------------------
+# Google Authentication Dependency
+# -----------------------------------------------------------------------------
+class AuthenticatedUser(BaseModel):
+    id: int
+    google_id: str
+    email: str
+    name: Optional[str] = None
+    picture: Optional[str] = None
+
+
+async def get_current_user(
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db)
+) -> AuthenticatedUser:
+    """
+    Validates Google ID Token from Authorization: Bearer <id_token> header.
+    Extracts Google user info, upserts user in DB, and returns AuthenticatedUser.
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required. Please sign in with Google.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    token = authorization.split(" ", 1)[1].strip()
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Empty authentication token.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    try:
+        # Verify Google OAuth2 ID Token
+        idinfo = id_token.verify_oauth2_token(
+            token,
+            google_requests.Request(),
+            GOOGLE_CLIENT_ID
+        )
+
+        google_id = idinfo.get("sub")
+        email = idinfo.get("email", "").lower()
+        name = idinfo.get("name", email.split("@")[0])
+        picture = idinfo.get("picture", "")
+
+        if not google_id or not email:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Google token claims.")
+
+        # Find or create User record in DB
+        user = db.query(User).filter(User.google_id == google_id).first()
+        if not user:
+            # Also check by email to handle potential re-links
+            user = db.query(User).filter(User.email == email).first()
+            if user:
+                user.google_id = google_id
+                user.name = name
+                user.picture = picture
+            else:
+                user = User(
+                    google_id=google_id,
+                    email=email,
+                    name=name,
+                    picture=picture,
+                    created_at=datetime.now(timezone.utc)
+                )
+                db.add(user)
+            db.commit()
+            db.refresh(user)
+        else:
+            # Update user profile if changed
+            if user.name != name or user.picture != picture or user.email != email:
+                user.name = name
+                user.picture = picture
+                user.email = email
+                db.commit()
+                db.refresh(user)
+
+        return AuthenticatedUser(
+            id=user.id,
+            google_id=user.google_id,
+            email=user.email,
+            name=user.name,
+            picture=user.picture
+        )
+
+    except ValueError as ve:
+        logger.warning(f"Invalid Google token: {ve}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Google ID token has expired or is invalid. Please sign in again.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except Exception as e:
+        logger.error(f"Google token auth error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication failed. Please sign in with Google.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
 
 # -----------------------------------------------------------------------------
@@ -137,7 +280,6 @@ class URLCreateRequest(BaseModel):
         v = v.strip()
         if not v:
             raise ValueError("URL cannot be empty.")
-        # Auto-prefix https:// if missing
         if not v.startswith("http://") and not v.startswith("https://"):
             v = "https://" + v
         return v
@@ -145,6 +287,8 @@ class URLCreateRequest(BaseModel):
 
 class MonitoredURLResponse(BaseModel):
     id: int
+    user_id: Optional[int] = None
+    user_email: Optional[str] = None
     name: str
     url: str
     status: str
@@ -152,6 +296,7 @@ class MonitoredURLResponse(BaseModel):
     created_at: Optional[str]
     response_time_ms: Optional[int]
     http_code: Optional[int]
+    is_active: bool = True
 
 
 # -----------------------------------------------------------------------------
@@ -251,24 +396,23 @@ async def ping_single_url_db(url_id: int) -> Optional[dict]:
 
 
 async def execute_scheduled_ping_cycle():
-    """Scheduled task that iterates through all registered URLs and pings them concurrently."""
-    logger.info("Executing scheduled Keep-Alive ping cycle...")
+    """Scheduled task that iterates through all active URLs across all users and pings them concurrently."""
+    logger.info("Executing scheduled Keep-Alive ping cycle across all active targets...")
     db = SessionLocal()
     try:
-        urls = db.query(MonitoredURL).all()
+        urls = db.query(MonitoredURL).filter(MonitoredURL.is_active.is_(True)).all()
         if not urls:
-            logger.info("No URLs registered for ping cycle.")
+            logger.info("No active URLs registered for ping cycle.")
             return
 
-        logger.info(f"Pinging {len(urls)} target URL(s)...")
+        logger.info(f"Pinging {len(urls)} active target URL(s)...")
 
         async def _ping_and_save(target_id: int, target_url: str):
             res = await perform_http_ping(target_url)
-            # Create isolated db session for each record to prevent batch rollback
             item_db = SessionLocal()
             try:
                 rec = item_db.query(MonitoredURL).filter(MonitoredURL.id == target_id).first()
-                if rec:
+                if rec and rec.is_active:
                     rec.status = res["status"]
                     rec.http_code = res["http_code"]
                     rec.response_time_ms = res["response_time_ms"]
@@ -282,7 +426,7 @@ async def execute_scheduled_ping_cycle():
 
         tasks = [_ping_and_save(u.id, u.url) for u in urls]
         await asyncio.gather(*tasks, return_exceptions=True)
-        logger.info(f"Keep-Alive ping cycle finished successfully for {len(urls)} target(s).")
+        logger.info(f"Keep-Alive ping cycle finished successfully for {len(urls)} active target(s).")
     except Exception as e:
         logger.error(f"Ping cycle error: {e}")
     finally:
@@ -296,8 +440,8 @@ scheduler = AsyncIOScheduler()
 
 app = FastAPI(
     title="Render 24/7 Keep-Alive Hub",
-    description="Automated health check and 24/7 keep-alive manager for Render deployments.",
-    version="1.0.0"
+    description="Automated health check and 24/7 keep-alive manager for Render deployments with Google Sign-In.",
+    version="2.0.0"
 )
 
 # CORS
@@ -329,7 +473,7 @@ async def on_startup():
     scheduler.start()
     logger.info(f"APScheduler started: Ping cycle set to run every {PING_INTERVAL_MINUTES} minutes.")
 
-    # Trigger a soft initial ping in the background after 3 seconds so the dashboard gets immediate data
+    # Trigger a soft initial ping in the background after 3 seconds
     async def delayed_initial_ping():
         await asyncio.sleep(3)
         await execute_scheduled_ping_cycle()
@@ -349,39 +493,73 @@ async def on_shutdown():
 # Web & API Endpoints
 # -----------------------------------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
-async def serve_dashboard(request: Request, db: Session = Depends(get_db)):
-    """Serves the Single Page Dashboard."""
+async def serve_dashboard(request: Request):
+    """Serves the Single Page Dashboard with Google Auth configuration."""
     return templates.TemplateResponse(
         request=request,
         name="index.html",
         context={
-            "ping_interval": PING_INTERVAL_MINUTES
+            "ping_interval": PING_INTERVAL_MINUTES,
+            "google_client_id": GOOGLE_CLIENT_ID
         }
     )
 
 
+@app.get("/api/me")
+async def get_my_profile(current_user: AuthenticatedUser = Depends(get_current_user)):
+    """Returns the authenticated Google user's profile."""
+    return {
+        "success": True,
+        "user": {
+            "id": current_user.id,
+            "email": current_user.email,
+            "name": current_user.name,
+            "picture": current_user.picture
+        }
+    }
+
+
 @app.get("/api/urls", response_model=List[MonitoredURLResponse])
-async def list_monitored_urls(db: Session = Depends(get_db)):
-    """Returns JSON array of all stored URLs ordered by ID descending."""
-    urls = db.query(MonitoredURL).order_by(desc(MonitoredURL.id)).all()
+async def list_monitored_urls(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Returns JSON array of monitored URLs belonging ONLY to the authenticated user."""
+    urls = db.query(MonitoredURL)\
+        .filter(
+            (MonitoredURL.user_id == current_user.id) | (MonitoredURL.user_email == current_user.email)
+        )\
+        .order_by(desc(MonitoredURL.id))\
+        .all()
     return [u.to_dict() for u in urls]
 
 
 @app.post("/api/urls", status_code=status.HTTP_201_CREATED)
-async def create_monitored_url(payload: URLCreateRequest, db: Session = Depends(get_db)):
-    """Inserts a new target URL into NeonDB and triggers an immediate ping."""
-    # Check for existing duplicate URL
-    existing = db.query(MonitoredURL).filter(MonitoredURL.url == payload.url).first()
+async def create_monitored_url(
+    payload: URLCreateRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Inserts a new target URL for the authenticated user and triggers an immediate ping."""
+    # Check if this user already monitors this exact URL
+    existing = db.query(MonitoredURL).filter(
+        ((MonitoredURL.user_id == current_user.id) | (MonitoredURL.user_email == current_user.email)),
+        MonitoredURL.url == payload.url
+    ).first()
+
     if existing:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"URL '{payload.url}' is already being monitored as '{existing.name}'."
+            detail=f"URL '{payload.url}' is already in your dashboard as '{existing.name}'."
         )
 
     new_item = MonitoredURL(
+        user_id=current_user.id,
+        user_email=current_user.email,
         name=payload.name,
         url=payload.url,
         status="Waking Up...",
+        is_active=True,
         created_at=datetime.now(timezone.utc)
     )
     db.add(new_item)
@@ -398,12 +576,52 @@ async def create_monitored_url(payload: URLCreateRequest, db: Session = Depends(
     }
 
 
-@app.delete("/api/urls/{url_id}")
-async def delete_monitored_url(url_id: int, db: Session = Depends(get_db)):
-    """Removes a target URL from NeonDB."""
-    record = db.query(MonitoredURL).filter(MonitoredURL.id == url_id).first()
+@app.post("/api/urls/{url_id}/toggle")
+async def toggle_url_active(
+    url_id: int,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Toggles pause/resume state for a monitored URL owned by the authenticated user."""
+    record = db.query(MonitoredURL).filter(
+        MonitoredURL.id == url_id,
+        ((MonitoredURL.user_id == current_user.id) | (MonitoredURL.user_email == current_user.email))
+    ).first()
+
     if not record:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Target URL not found.")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Target URL not found in your account.")
+
+    record.is_active = not record.is_active
+    if not record.is_active:
+        record.status = "Paused"
+    else:
+        record.status = "Resuming..."
+        asyncio.create_task(ping_single_url_db(record.id))
+
+    db.commit()
+    db.refresh(record)
+    state_str = "Resumed (Active)" if record.is_active else "Paused"
+    return {
+        "success": True,
+        "message": f"'{record.name}' is now {state_str}.",
+        "data": record.to_dict()
+    }
+
+
+@app.delete("/api/urls/{url_id}")
+async def delete_monitored_url(
+    url_id: int,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Removes a target URL belonging to the authenticated user from NeonDB."""
+    record = db.query(MonitoredURL).filter(
+        MonitoredURL.id == url_id,
+        ((MonitoredURL.user_id == current_user.id) | (MonitoredURL.user_email == current_user.email))
+    ).first()
+
+    if not record:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Target URL not found in your account.")
 
     url_name = record.name
     db.delete(record)
@@ -412,29 +630,58 @@ async def delete_monitored_url(url_id: int, db: Session = Depends(get_db)):
 
 
 @app.post("/api/ping/{url_id}")
-async def trigger_manual_ping(url_id: int):
-    """Instantly triggers a manual ping to a specific target URL and returns updated state."""
+async def trigger_manual_ping(
+    url_id: int,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Instantly triggers a manual ping to an owned target URL and returns updated state."""
+    record = db.query(MonitoredURL).filter(
+        MonitoredURL.id == url_id,
+        ((MonitoredURL.user_id == current_user.id) | (MonitoredURL.user_email == current_user.email))
+    ).first()
+
+    if not record:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Target URL not found in your account.")
+
     updated = await ping_single_url_db(url_id)
-    if not updated:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Target URL not found.")
     return {"success": True, "data": updated}
 
 
 @app.post("/api/ping-all")
-async def trigger_ping_all():
-    """Triggers an immediate sweep ping across all registered target URLs."""
-    asyncio.create_task(execute_scheduled_ping_cycle())
-    return {"success": True, "message": "Manual ping cycle initiated for all monitored targets."}
+async def trigger_ping_all(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Triggers an immediate sweep ping across all user's active targets."""
+    urls = db.query(MonitoredURL).filter(
+        ((MonitoredURL.user_id == current_user.id) | (MonitoredURL.user_email == current_user.email)),
+        MonitoredURL.is_active.is_(True)
+    ).all()
+
+    async def _sweep():
+        tasks = [ping_single_url_db(u.id) for u in urls]
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    asyncio.create_task(_sweep())
+    return {"success": True, "message": f"Manual sweep ping initiated for {len(urls)} target(s)."}
 
 
 @app.get("/api/stats")
-async def get_monitoring_stats(db: Session = Depends(get_db)):
-    """Returns real-time dashboard metrics (Alive, Waking Up, Offline, Total)."""
-    urls = db.query(MonitoredURL).all()
+async def get_monitoring_stats(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Returns real-time dashboard metrics for the authenticated user only."""
+    urls = db.query(MonitoredURL).filter(
+        (MonitoredURL.user_id == current_user.id) | (MonitoredURL.user_email == current_user.email)
+    ).all()
+
     total = len(urls)
-    alive = sum(1 for u in urls if u.status and u.status.startswith("Active"))
-    waking = sum(1 for u in urls if u.status and ("Waking" in u.status or "Redirect" in u.status))
-    failed = sum(1 for u in urls if u.status and ("Failed" in u.status or "Timeout" in u.status or "Unreachable" in u.status))
+    alive = sum(1 for u in urls if u.is_active and u.status and u.status.startswith("Active"))
+    waking = sum(1 for u in urls if u.is_active and u.status and ("Waking" in u.status or "Redirect" in u.status))
+    failed = sum(1 for u in urls if u.is_active and u.status and ("Failed" in u.status or "Timeout" in u.status or "Unreachable" in u.status))
+    paused = sum(1 for u in urls if not u.is_active)
 
     # Next scheduled run
     next_run = None
@@ -447,6 +694,7 @@ async def get_monitoring_stats(db: Session = Depends(get_db)):
         "alive": alive,
         "waking": waking,
         "failed": failed,
+        "paused": paused,
         "next_run": next_run,
         "ping_interval_minutes": PING_INTERVAL_MINUTES
     }
@@ -455,7 +703,7 @@ async def get_monitoring_stats(db: Session = Depends(get_db)):
 @app.get("/api/health")
 async def health_check(db: Session = Depends(get_db)):
     """
-    Self-health check endpoint.
+    Public self-health check endpoint.
     Users can register THIS endpoint on external cron or self-monitor to keep this Hub alive!
     """
     db_ok = False

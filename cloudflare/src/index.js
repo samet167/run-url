@@ -111,7 +111,6 @@ async function pingAndSaveUrl(sql, id, url) {
 }
 
 async function sweepAllUrls(sql) {
-  // Pings all active URLs across all users to keep everyone's apps awake 24/7
   const urls = await sql`SELECT id, url, name FROM monitored_urls WHERE is_active = TRUE`;
   if (!urls || urls.length === 0) return;
 
@@ -130,7 +129,6 @@ async function verifyGoogleToken(authHeader, sql) {
   const token = authHeader.split(' ')[1].trim();
   if (!token) throw new Error('Empty authentication token.');
 
-  // Validate token via Google tokeninfo endpoint
   const verifyRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(token)}`);
   if (!verifyRes.ok) {
     throw new Error('Google token expired or invalid. Please sign in again.');
@@ -146,7 +144,6 @@ async function verifyGoogleToken(authHeader, sql) {
     throw new Error('Invalid Google token claims.');
   }
 
-  // Find or upsert user in DB
   const existingUsers = await sql`SELECT * FROM users WHERE google_id = ${googleId} OR email = ${email} LIMIT 1`;
   let user;
   if (existingUsers && existingUsers.length > 0) {
@@ -168,14 +165,12 @@ async function verifyGoogleToken(authHeader, sql) {
 // Cloudflare Worker Handlers
 // -----------------------------------------------------------------------------
 export default {
-  // 1. Native Cron Trigger (Every 10 mins at Cloudflare Edge)
   async scheduled(event, env, ctx) {
     const sql = getSql(env);
     await ensureTable(sql);
     ctx.waitUntil(sweepAllUrls(sql));
   },
 
-  // 2. HTTP Request Router
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const sql = getSql(env);
@@ -251,7 +246,7 @@ export default {
       }
     }
 
-    // Router: POST /api/urls (Add URL under Current User)
+    // Router: POST /api/urls
     if (url.pathname === '/api/urls' && request.method === 'POST') {
       try {
         const body = await request.json();
@@ -288,7 +283,7 @@ export default {
       }
     }
 
-    // Router: POST /api/urls/:id/toggle (Pause / Resume)
+    // Router: POST /api/urls/:id/toggle
     if (url.pathname.match(/^\/api\/urls\/\d+\/toggle$/) && request.method === 'POST') {
       const id = parseInt(url.pathname.split('/')[3], 10);
       try {
@@ -414,17 +409,18 @@ export default {
 };
 
 // -----------------------------------------------------------------------------
-// Cloudflare Worker Embedded Dashboard HTML
+// Cloudflare Worker Embedded Responsive HTML (Dark/Light + Native Mobile Dock)
 // -----------------------------------------------------------------------------
 function renderDashboardHtml() {
-  // Serves the multi-user HTML dashboard
   return `<!DOCTYPE html>
 <html lang="en" class="dark">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Render 24/7 Keep-Alive Hub | Cloudflare Edge</title>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>KeepAlive Hub &bull; 24/7 Render Keep-Awake Engine</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
     <script src="https://accounts.google.com/gsi/client" async defer></script>
@@ -437,77 +433,90 @@ function renderDashboardHtml() {
                         sans: ['"Plus Jakarta Sans"', 'sans-serif'],
                         mono: ['"JetBrains Mono"', 'monospace'],
                     },
-                    screens: { 'xs': '420px' }
+                    screens: { 'xs': '420px' },
+                    boxShadow: {
+                        'card-light': '0 4px 20px -2px rgba(0, 0, 0, 0.05), 0 2px 6px -1px rgba(0, 0, 0, 0.02)',
+                        'card-dark': '0 10px 30px -10px rgba(0, 0, 0, 0.5), 0 0 1px 1px rgba(255, 255, 255, 0.05)',
+                    }
                 }
             }
         }
     </script>
     <style>
-        ::-webkit-scrollbar { width: 6px; height: 6px; }
-        ::-webkit-scrollbar-track { background: #0f172a; }
-        ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
-        .glass-panel {
-            background: rgba(15, 23, 42, 0.75);
-            backdrop-filter: blur(16px);
-            -webkit-backdrop-filter: blur(16px);
-            border: 1px solid rgba(51, 65, 85, 0.6);
+        * { transition: background-color 0.25s ease, border-color 0.25s ease; }
+        ::-webkit-scrollbar { width: 5px; height: 5px; }
+        .dark ::-webkit-scrollbar-track { background: #090d16; }
+        .dark ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 9999px; }
+        ::-webkit-scrollbar-track { background: #f1f5f9; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 9999px; }
+
+        .theme-glass {
+            background: rgba(255, 255, 255, 0.85);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(226, 232, 240, 0.9);
         }
+        .dark .theme-glass {
+            background: rgba(13, 19, 33, 0.78);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.07);
+        }
+        .theme-surface { background: #ffffff; border: 1px solid #e2e8f0; }
+        .dark .theme-surface { background: #0d1321; border: 1px solid rgba(255, 255, 255, 0.07); }
         button, a, input { -webkit-tap-highlight-color: transparent; }
     </style>
 </head>
-<body class="bg-slate-950 text-slate-100 min-h-screen font-sans antialiased selection:bg-orange-500 selection:text-white flex flex-col">
-    <div class="fixed top-0 left-1/2 -translate-x-1/2 w-full max-w-7xl h-64 bg-gradient-to-b from-orange-600/15 via-emerald-600/5 to-transparent blur-3xl pointer-events-none -z-10"></div>
+<body class="bg-slate-50 text-slate-800 dark:bg-[#070a11] dark:text-slate-100 min-h-screen font-sans antialiased selection:bg-orange-500 selection:text-white flex flex-col pb-20 md:pb-0">
+    <div class="fixed top-0 left-1/2 -translate-x-1/2 w-full max-w-6xl h-96 bg-gradient-to-b from-orange-500/10 via-amber-500/5 to-transparent blur-3xl pointer-events-none -z-10 dark:from-orange-600/15 dark:via-emerald-600/5"></div>
 
-    <header class="sticky top-0 z-40 border-b border-slate-800/80 bg-slate-950/90 backdrop-blur-md">
-        <div class="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-2">
-            <div class="flex items-center gap-2.5 min-w-0">
-                <div class="relative flex items-center justify-center w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-gradient-to-br from-orange-500 to-amber-600 shadow-lg shadow-orange-500/20 text-white font-bold shrink-0">
-                    <i data-lucide="cloud-lightning" class="w-4 h-4 sm:w-5 sm:h-5"></i>
-                    <span class="absolute -top-1 -right-1 flex h-2.5 w-2.5 sm:h-3 sm:w-3">
+    <header class="sticky top-0 z-40 border-b border-slate-200/80 dark:border-slate-800/80 bg-white/80 dark:bg-[#070a11]/85 backdrop-blur-xl">
+        <div class="max-w-7xl mx-auto px-3.5 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-3">
+            <div class="flex items-center gap-3 min-w-0">
+                <div class="relative flex items-center justify-center w-10 h-10 rounded-2xl bg-gradient-to-br from-orange-500 to-amber-600 shadow-md shadow-orange-500/20 text-white font-bold shrink-0">
+                    <i data-lucide="cloud-lightning" class="w-5 h-5 fill-current"></i>
+                    <span class="absolute -top-0.5 -right-0.5 flex h-3 w-3">
                         <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                        <span class="relative inline-flex rounded-full h-2.5 w-2.5 sm:h-3 sm:w-3 bg-emerald-500"></span>
+                        <span class="relative inline-flex rounded-full h-3 w-3 bg-emerald-500 ring-2 ring-white dark:ring-slate-950"></span>
                     </span>
                 </div>
                 <div class="truncate">
-                    <h1 class="text-sm sm:text-base md:text-lg font-bold tracking-tight text-white flex items-center gap-1.5 truncate">
-                        <span>Keep-Alive Hub</span>
-                        <span class="text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5 rounded-full bg-orange-500/15 text-orange-400 font-semibold border border-orange-500/30">Edge Multi-User</span>
-                    </h1>
-                    <p class="hidden xs:block text-[11px] text-slate-400 truncate">Private Dashboard &bull; Auto-ping 10 min</p>
+                    <div class="flex items-center gap-1.5">
+                        <span class="text-sm sm:text-base font-extrabold tracking-tight text-slate-900 dark:text-white">KeepAlive</span>
+                        <span class="text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider bg-orange-100 text-orange-700 dark:bg-orange-500/15 dark:text-orange-400 border border-orange-300/40 dark:border-orange-500/30">Edge</span>
+                    </div>
+                    <p class="hidden xs:block text-[11px] text-slate-500 dark:text-slate-400 truncate">Cloudflare Native 24/7 Engine</p>
                 </div>
             </div>
 
-            <div class="flex items-center gap-2 sm:gap-3 shrink-0">
-                <div id="auth-controls" class="hidden flex items-center gap-2 sm:gap-3">
-                    <div class="flex items-center gap-1.5 text-[11px] sm:text-xs text-slate-400 bg-slate-900/90 border border-slate-800 px-2 sm:px-2.5 py-1.5 rounded-lg">
-                        <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                        <span class="hidden xs:inline">Sync in</span>
-                        <strong id="refresh-countdown" class="text-slate-200 font-mono">15s</strong>
-                    </div>
+            <div class="flex items-center gap-2 sm:gap-2.5 shrink-0">
+                <button onclick="toggleTheme()" id="theme-toggle-btn" class="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-800 active:scale-95 cursor-pointer">
+                    <i data-lucide="sun" class="w-4 h-4 hidden dark:block text-amber-400"></i>
+                    <i data-lucide="moon" class="w-4 h-4 block dark:hidden text-slate-700"></i>
+                </button>
 
-                    <button onclick="triggerPingAll()" id="btn-sweep-all" class="inline-flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-orange-600 hover:bg-orange-500 text-white shadow-sm shadow-orange-900/40 transition active:scale-95 cursor-pointer">
+                <div id="auth-controls" class="hidden flex items-center gap-2">
+                    <button onclick="triggerPingAll()" id="btn-sweep-all" class="hidden sm:inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-orange-600 hover:bg-orange-500 text-white shadow-md shadow-orange-600/20 active:scale-95 cursor-pointer">
                         <i data-lucide="activity" class="w-3.5 h-3.5"></i>
-                        <span class="hidden sm:inline">Sweep All</span>
+                        <span>Sweep All</span>
                     </button>
-
-                    <button onclick="fetchData(true)" title="Manual Refresh" class="p-1.5 sm:p-2 rounded-lg text-slate-400 hover:text-slate-200 bg-slate-900 hover:bg-slate-800 border border-slate-800 transition active:scale-95 cursor-pointer">
-                        <i data-lucide="rotate-cw" id="refresh-icon" class="w-3.5 h-3.5 sm:w-4 sm:h-4"></i>
+                    <button onclick="fetchData(true)" class="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 active:scale-95 cursor-pointer">
+                        <i data-lucide="rotate-cw" id="refresh-icon" class="w-4 h-4"></i>
                     </button>
-
-                    <div class="flex items-center gap-2 pl-1 sm:pl-2 border-l border-slate-800">
-                        <img id="user-avatar" src="" alt="Avatar" class="w-8 h-8 rounded-full border border-orange-500/50 object-cover shrink-0 hidden">
-                        <div class="hidden md:block text-left min-w-0 max-w-[130px]">
-                            <div id="user-name" class="text-xs font-bold text-white truncate">User</div>
-                            <div id="user-email" class="text-[10px] text-slate-400 truncate">user@gmail.com</div>
+                    <div class="flex items-center gap-2 pl-1.5 border-l border-slate-200 dark:border-slate-800">
+                        <img id="user-avatar" src="" alt="Avatar" class="w-8 h-8 rounded-full border-2 border-orange-500 object-cover shrink-0 hidden shadow-sm">
+                        <div class="hidden lg:block text-left min-w-0 max-w-[120px]">
+                            <div id="user-name" class="text-xs font-bold text-slate-800 dark:text-white truncate">User</div>
+                            <div id="user-email" class="text-[10px] text-slate-500 dark:text-slate-400 truncate">user@gmail.com</div>
                         </div>
-                        <button onclick="handleSignOut()" title="Sign Out" class="p-1.5 sm:p-2 rounded-lg text-slate-400 hover:text-rose-300 hover:bg-rose-950/40 border border-slate-800 transition cursor-pointer">
+                        <button onclick="handleSignOut()" class="p-2 rounded-xl text-slate-500 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 border border-slate-200 dark:border-slate-800 active:scale-95 cursor-pointer">
                             <i data-lucide="log-out" class="w-4 h-4"></i>
                         </button>
                     </div>
                 </div>
 
                 <div id="unauth-header-btn" class="flex items-center">
-                    <button onclick="promptGoogleSignIn()" class="inline-flex items-center gap-2 px-3 sm:px-4 py-2 rounded-xl text-xs font-semibold bg-white text-slate-900 hover:bg-slate-100 shadow-md transition cursor-pointer">
+                    <button onclick="promptGoogleSignIn()" class="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold bg-slate-900 hover:bg-slate-800 text-white dark:bg-white dark:text-slate-900 shadow-sm active:scale-95 cursor-pointer">
                         <svg class="w-4 h-4" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/></svg>
                         <span>Sign In</span>
                     </button>
@@ -516,88 +525,103 @@ function renderDashboardHtml() {
         </div>
     </header>
 
-    <main class="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-8">
-        <section id="login-hero-view" class="max-w-3xl mx-auto my-8 sm:my-14 text-center space-y-6">
-            <h2 class="text-3xl sm:text-5xl font-extrabold tracking-tight text-white leading-tight">
-                Keep Your Free Render Deployments <br class="hidden sm:inline">
-                <span class="bg-gradient-to-r from-orange-400 via-amber-300 to-emerald-400 bg-clip-text text-transparent">Awake 24 Hours / 7 Days</span>
+    <main class="flex-1 max-w-7xl w-full mx-auto px-3.5 sm:px-6 lg:px-8 py-4 sm:py-7">
+        <section id="login-hero-view" class="max-w-3xl mx-auto my-6 sm:my-12 text-center space-y-6">
+            <h2 class="text-3xl sm:text-5xl font-extrabold tracking-tight text-slate-900 dark:text-white leading-[1.15]">
+                Prevent Cold Boots.<br>
+                <span class="bg-gradient-to-r from-orange-600 via-amber-500 to-emerald-600 dark:from-orange-400 dark:via-amber-300 dark:to-emerald-400 bg-clip-text text-transparent">Keep Render 24/7 Awake.</span>
             </h2>
-            <p class="text-slate-300 text-sm sm:text-base max-w-2xl mx-auto leading-relaxed">
-                Log in with your Google Account to manage your private list of Render apps.
+            <p class="text-slate-600 dark:text-slate-300 text-sm sm:text-base max-w-xl mx-auto">
+                Connect your Google Account to manage your private list of Render apps.
             </p>
-            <div class="glass-panel p-6 sm:p-8 rounded-2xl sm:rounded-3xl border border-slate-700/80 shadow-2xl max-w-md mx-auto space-y-5 mt-6">
-                <h3 class="text-base font-bold text-white">Sign In to Your Dashboard</h3>
-                <div class="flex justify-center pt-2">
-                    <div id="g_id_signin_container"></div>
-                </div>
+            <div class="theme-glass p-6 sm:p-8 rounded-3xl shadow-card-light dark:shadow-card-dark max-w-md mx-auto space-y-5 mt-6">
+                <h3 class="text-base font-bold text-slate-900 dark:text-white">Sign In to Dashboard</h3>
+                <div class="flex justify-center pt-2"><div id="g_id_signin_container"></div></div>
             </div>
         </section>
 
         <div id="authenticated-dashboard" class="hidden space-y-4 sm:space-y-6">
             <section class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5 sm:gap-4">
-                <div class="glass-panel p-3.5 sm:p-5 rounded-xl sm:rounded-2xl relative overflow-hidden group">
-                    <span class="text-[10px] sm:text-xs font-medium text-slate-400 uppercase tracking-wider block">Total</span>
-                    <span id="metric-total" class="text-2xl sm:text-3xl font-extrabold text-white font-mono">0</span>
+                <div class="theme-surface p-4 rounded-2xl shadow-card-light dark:shadow-card-dark">
+                    <span class="text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">Total</span>
+                    <span id="metric-total" class="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white font-mono">0</span>
                 </div>
-                <div class="glass-panel p-3.5 sm:p-5 rounded-xl sm:rounded-2xl relative overflow-hidden group border-emerald-500/20">
-                    <span class="text-[10px] sm:text-xs font-medium text-emerald-400 uppercase tracking-wider block">Awake</span>
-                    <span id="metric-alive" class="text-2xl sm:text-3xl font-extrabold text-emerald-400 font-mono">0</span>
+                <div class="theme-surface p-4 rounded-2xl shadow-card-light dark:shadow-card-dark border-emerald-500/30">
+                    <span class="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider block">Awake</span>
+                    <span id="metric-alive" class="text-2xl sm:text-3xl font-extrabold text-emerald-600 dark:text-emerald-400 font-mono">0</span>
                 </div>
-                <div class="glass-panel p-3.5 sm:p-5 rounded-xl sm:rounded-2xl relative overflow-hidden group border-slate-700/60">
-                    <span class="text-[10px] sm:text-xs font-medium text-amber-300 uppercase tracking-wider block">Paused</span>
-                    <span id="metric-paused" class="text-2xl sm:text-3xl font-extrabold text-amber-300 font-mono">0</span>
+                <div class="theme-surface p-4 rounded-2xl shadow-card-light dark:shadow-card-dark border-amber-500/30">
+                    <span class="text-[11px] font-bold text-amber-600 dark:text-amber-300 uppercase tracking-wider block">Paused</span>
+                    <span id="metric-paused" class="text-2xl sm:text-3xl font-extrabold text-amber-600 dark:text-amber-300 font-mono">0</span>
                 </div>
-                <div class="glass-panel p-3.5 sm:p-5 rounded-xl sm:rounded-2xl relative overflow-hidden group border-amber-500/20">
-                    <span class="text-[10px] sm:text-xs font-medium text-amber-400 uppercase tracking-wider block">Waking</span>
-                    <span id="metric-waking" class="text-2xl sm:text-3xl font-extrabold text-amber-400 font-mono">0</span>
+                <div class="theme-surface p-4 rounded-2xl shadow-card-light dark:shadow-card-dark border-sky-500/30">
+                    <span class="text-[11px] font-bold text-sky-600 dark:text-sky-400 uppercase tracking-wider block">Waking</span>
+                    <span id="metric-waking" class="text-2xl sm:text-3xl font-extrabold text-sky-600 dark:text-sky-400 font-mono">0</span>
                 </div>
-                <div class="glass-panel p-3.5 sm:p-5 rounded-xl sm:rounded-2xl relative overflow-hidden group border-rose-500/20 col-span-2 sm:col-span-1">
-                    <span class="text-[10px] sm:text-xs font-medium text-rose-400 uppercase tracking-wider block">Offline</span>
-                    <span id="metric-failed" class="text-2xl sm:text-3xl font-extrabold text-rose-400 font-mono">0</span>
+                <div class="theme-surface p-4 rounded-2xl shadow-card-light dark:shadow-card-dark border-rose-500/30 col-span-2 sm:col-span-1">
+                    <span class="text-[11px] font-bold text-rose-600 dark:text-rose-400 uppercase tracking-wider block">Offline</span>
+                    <span id="metric-failed" class="text-2xl sm:text-3xl font-extrabold text-rose-600 dark:text-rose-400 font-mono">0</span>
                 </div>
             </section>
 
-            <section class="glass-panel p-4 sm:p-6 rounded-xl sm:rounded-2xl shadow-xl">
+            <section class="theme-surface p-4 sm:p-6 rounded-3xl shadow-card-light dark:shadow-card-dark">
                 <form id="add-url-form" onsubmit="handleAddUrl(event)" class="grid grid-cols-1 md:grid-cols-12 gap-3 sm:gap-4 items-end">
                     <div class="md:col-span-4">
-                        <label class="block text-xs font-medium text-slate-300 mb-1">Project Name</label>
-                        <input type="text" id="project-name" required placeholder="e.g. Pharmacy POS Backend" class="w-full h-11 bg-slate-900 border border-slate-700 rounded-xl px-3 text-sm text-white">
+                        <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">App Name</label>
+                        <input type="text" id="project-name" required placeholder="e.g. Pharmacy POS Backend" class="w-full h-11 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700/80 rounded-2xl px-3.5 text-sm text-slate-900 dark:text-white">
                     </div>
                     <div class="md:col-span-6">
-                        <label class="block text-xs font-medium text-slate-300 mb-1">Render URL</label>
-                        <input type="text" id="target-url" required placeholder="https://my-backend.onrender.com/" class="w-full h-11 bg-slate-900 border border-slate-700 rounded-xl px-3 text-sm text-white font-mono">
+                        <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">Render Service URL</label>
+                        <input type="text" id="target-url" required placeholder="https://my-service.onrender.com/" class="w-full h-11 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700/80 rounded-2xl px-3.5 text-sm font-mono text-slate-900 dark:text-white">
                     </div>
                     <div class="md:col-span-2">
-                        <button type="submit" id="btn-submit-url" class="w-full h-11 rounded-xl bg-orange-600 hover:bg-orange-500 font-semibold text-sm text-white">Monitor URL</button>
+                        <button type="submit" id="btn-submit-url" class="w-full h-11 rounded-2xl font-bold text-sm bg-gradient-to-r from-orange-600 to-amber-600 text-white active:scale-95 cursor-pointer">Add App</button>
                     </div>
                 </form>
             </section>
 
-            <section class="glass-panel rounded-xl sm:rounded-2xl overflow-hidden">
+            <section class="theme-surface rounded-3xl overflow-hidden shadow-card-light dark:shadow-card-dark">
+                <div class="px-4 sm:px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+                    <div class="flex items-center gap-2">
+                        <i data-lucide="layers" class="w-4 h-4 text-orange-500"></i>
+                        <h3 class="text-sm sm:text-base font-bold text-slate-900 dark:text-white">Managed Endpoints</h3>
+                    </div>
+                    <div class="w-full sm:w-64 relative">
+                        <input type="text" id="filter-input" oninput="filterUrls()" placeholder="Search..." class="w-full h-9 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-xl px-3 text-xs text-slate-900 dark:text-white">
+                    </div>
+                </div>
+
                 <div id="mobile-cards-container" class="block md:hidden p-3 space-y-3"></div>
                 <div class="hidden md:block overflow-x-auto">
                     <table class="w-full text-left text-sm">
-                        <thead class="bg-slate-900/70 border-b border-slate-800 text-xs font-semibold text-slate-400 uppercase">
+                        <thead class="bg-slate-50 dark:bg-slate-900/60 border-b border-slate-200 dark:border-slate-800 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase">
                             <tr>
-                                <th class="px-6 py-3.5">Project</th>
-                                <th class="px-6 py-3.5">Target URL</th>
+                                <th class="px-6 py-3.5">Deployment Name</th>
+                                <th class="px-6 py-3.5">Target Endpoint</th>
                                 <th class="px-6 py-3.5">Live Status</th>
                                 <th class="px-6 py-3.5">Latency</th>
-                                <th class="px-6 py-3.5">Last Checked</th>
+                                <th class="px-6 py-3.5">Last Sweep</th>
                                 <th class="px-6 py-3.5 text-right">Actions</th>
                             </tr>
                         </thead>
-                        <tbody id="url-table-body" class="divide-y divide-slate-800/60"></tbody>
+                        <tbody id="url-table-body" class="divide-y divide-slate-100 dark:divide-slate-800/60"></tbody>
                     </table>
                 </div>
                 <div id="empty-state-view" class="hidden px-4 py-12 text-center text-slate-500">
-                    <p class="text-xs text-slate-500">No Target URLs Registered yet in your account.</p>
+                    <p class="text-xs">No Render Apps Monitored yet.</p>
                 </div>
             </section>
         </div>
     </main>
 
-    <div id="toast-container" class="fixed bottom-4 inset-x-3 sm:inset-x-auto sm:right-5 z-50 flex flex-col gap-2 pointer-events-none"></div>
+    <nav id="mobile-dock" class="fixed bottom-0 inset-x-0 z-40 md:hidden bg-white/95 dark:bg-[#070a11]/95 backdrop-blur-xl border-t border-slate-200 dark:border-slate-800 px-4 py-2 flex items-center justify-around shadow-2xl">
+        <button onclick="window.scrollTo({top:0,behavior:'smooth'})" class="flex flex-col items-center gap-1 text-slate-600 dark:text-slate-400 active:scale-90"><i data-lucide="home" class="w-5 h-5"></i><span class="text-[10px] font-bold">Home</span></button>
+        <button onclick="triggerPingAll()" class="flex flex-col items-center gap-1 text-slate-600 dark:text-slate-400 active:scale-90"><i data-lucide="zap" class="w-5 h-5"></i><span class="text-[10px] font-bold">Sweep</span></button>
+        <button onclick="fetchData(true)" class="flex flex-col items-center gap-1 text-slate-600 dark:text-slate-400 active:scale-90"><i data-lucide="rotate-cw" class="w-5 h-5"></i><span class="text-[10px] font-bold">Sync</span></button>
+        <button onclick="toggleTheme()" class="flex flex-col items-center gap-1 text-slate-600 dark:text-slate-400 active:scale-90"><i data-lucide="sun-moon" class="w-5 h-5"></i><span class="text-[10px] font-bold">Theme</span></button>
+    </nav>
+
+    <div id="toast-container" class="fixed bottom-16 sm:bottom-4 inset-x-3 sm:inset-x-auto sm:right-5 z-50 flex flex-col gap-2 pointer-events-none"></div>
 
     <script>
         const GOOGLE_CLIENT_ID = '` + GOOGLE_CLIENT_ID + `';
@@ -607,7 +631,19 @@ function renderDashboardHtml() {
         let currentUser = null;
         let authToken = localStorage.getItem('keepalive_google_token') || null;
 
+        function initTheme() {
+            const saved = localStorage.getItem('keepalive_theme');
+            if (saved === 'light') document.documentElement.classList.remove('dark');
+            else document.documentElement.classList.add('dark');
+        }
+
+        function toggleTheme() {
+            const isDark = document.documentElement.classList.toggle('dark');
+            localStorage.setItem('keepalive_theme', isDark ? 'dark' : 'light');
+        }
+
         window.onload = function () {
+            initTheme();
             lucide.createIcons();
             initGoogleAuth();
             if (authToken) restoreSession();
@@ -619,32 +655,19 @@ function renderDashboardHtml() {
                 setTimeout(initGoogleAuth, 300);
                 return;
             }
-            google.accounts.id.initialize({
-                client_id: GOOGLE_CLIENT_ID,
-                callback: handleGoogleCredentialResponse,
-                auto_select: false,
-            });
+            google.accounts.id.initialize({ client_id: GOOGLE_CLIENT_ID, callback: handleGoogleCredentialResponse });
             renderGoogleSignInButton();
         }
 
         function renderGoogleSignInButton() {
             const container = document.getElementById('g_id_signin_container');
             if (container && typeof google !== 'undefined' && google.accounts && google.accounts.id) {
-                google.accounts.id.renderButton(container, {
-                    theme: 'outline',
-                    size: 'large',
-                    type: 'standard',
-                    text: 'continue_with',
-                    shape: 'pill',
-                    width: 280
-                });
+                google.accounts.id.renderButton(container, { theme: 'outline', size: 'large', shape: 'pill', width: 280 });
             }
         }
 
         function promptGoogleSignIn() {
-            if (typeof google !== 'undefined' && google.accounts && google.accounts.id) {
-                google.accounts.id.prompt();
-            }
+            if (typeof google !== 'undefined' && google.accounts && google.accounts.id) google.accounts.id.prompt();
         }
 
         async function handleGoogleCredentialResponse(response) {
@@ -663,23 +686,18 @@ function renderDashboardHtml() {
                 currentUser = data.user;
                 showLoggedInUI(currentUser);
                 fetchData();
-                startCountdown();
             } catch (err) {
                 authToken = null;
-                currentUser = null;
                 localStorage.removeItem('keepalive_google_token');
                 showLoggedOutUI();
             }
         }
 
         function handleSignOut() {
-            if (typeof google !== 'undefined' && google.accounts && google.accounts.id) {
-                google.accounts.id.disableAutoSelect();
-            }
+            if (typeof google !== 'undefined' && google.accounts && google.accounts.id) google.accounts.id.disableAutoSelect();
             authToken = null;
             currentUser = null;
             localStorage.removeItem('keepalive_google_token');
-            if (refreshTimer) clearInterval(refreshTimer);
             showLoggedOutUI();
         }
 
@@ -691,10 +709,7 @@ function renderDashboardHtml() {
             document.getElementById('user-name').innerText = user.name || 'User';
             document.getElementById('user-email').innerText = user.email || '';
             const avatarElem = document.getElementById('user-avatar');
-            if (user.picture) {
-                avatarElem.src = user.picture;
-                avatarElem.classList.remove('hidden');
-            }
+            if (user.picture) { avatarElem.src = user.picture; avatarElem.classList.remove('hidden'); }
             lucide.createIcons();
         }
 
@@ -723,21 +738,7 @@ function renderDashboardHtml() {
                 const stats = await statsRes.json();
                 updateStats(stats);
                 renderAll(allUrls);
-                countdown = 15;
-            } catch (err) {
-                console.error(err);
-            }
-        }
-
-        function startCountdown() {
-            if (refreshTimer) clearInterval(refreshTimer);
-            refreshTimer = setInterval(() => {
-                if (!authToken) return;
-                countdown--;
-                const elem = document.getElementById('refresh-countdown');
-                if (elem) elem.innerText = countdown + 's';
-                if (countdown <= 0) { countdown = 15; fetchData(); }
-            }, 1000);
+            } catch (err) { console.error(err); }
         }
 
         function updateStats(stats) {
@@ -759,12 +760,12 @@ function renderDashboardHtml() {
 
         function getStatusBadge(status, httpCode, isActive = true) {
             if (!isActive || status === 'Paused') {
-                return '<span class="px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/30">Paused</span>';
+                return '<span class="px-2.5 py-1 rounded-full text-[11px] font-bold bg-amber-100 text-amber-800 dark:bg-amber-500/10 dark:text-amber-300 border border-amber-300 dark:border-amber-500/30">Paused</span>';
             }
             if (status.startsWith('Active')) {
-                return '<span class="px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">' + status + '</span>';
+                return '<span class="px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-500/30">' + status + '</span>';
             }
-            return '<span class="px-2 py-0.5 rounded-full text-xs font-semibold bg-rose-500/15 text-rose-400 border border-rose-500/30">' + status + '</span>';
+            return '<span class="px-2.5 py-1 rounded-full text-[11px] font-bold bg-rose-100 text-rose-800 dark:bg-rose-500/15 dark:text-rose-400 border border-rose-300 dark:border-rose-500/30">' + status + '</span>';
         }
 
         function renderAll(urls) {
@@ -780,34 +781,34 @@ function renderDashboardHtml() {
             emptyView.classList.add('hidden');
 
             mobileContainer.innerHTML = urls.map(item => \`
-                <div class="glass-panel p-4 rounded-xl space-y-2">
+                <div class="theme-surface p-4 rounded-2xl border \${item.is_active ? 'border-slate-200 dark:border-slate-800' : 'border-amber-300 dark:border-amber-500/30'} space-y-3">
                     <div class="flex justify-between items-start">
                         <div>
-                            <h3 class="font-bold text-sm text-white">\${escapeHtml(item.name)}</h3>
-                            <span class="text-[10px] text-slate-400">\${formatRelativeTime(item.created_at)}</span>
+                            <h4 class="font-extrabold text-sm text-slate-900 dark:text-white">\${escapeHtml(item.name)}</h4>
+                            <span class="text-[10px] text-slate-500">\${formatRelativeTime(item.created_at)}</span>
                         </div>
                         \${getStatusBadge(item.status, item.http_code, item.is_active)}
                     </div>
-                    <div class="font-mono text-xs text-orange-400 truncate">\${escapeHtml(item.url)}</div>
-                    <div class="grid grid-cols-3 gap-1 pt-2">
-                        <button onclick="toggleActive(\${item.id}, this)" class="h-8 rounded bg-slate-800 text-xs font-medium text-amber-300">\${item.is_active ? 'Pause' : 'Start'}</button>
-                        <button onclick="triggerPing(\${item.id}, this)" class="h-8 rounded bg-orange-600/20 text-xs font-medium text-orange-300">Ping</button>
-                        <button onclick="deleteUrl(\${item.id}, '\${escapeHtml(item.name)}')" class="h-8 rounded bg-rose-600/15 text-xs font-medium text-rose-300">Delete</button>
+                    <div class="font-mono text-xs text-orange-600 dark:text-orange-400 truncate bg-slate-50 dark:bg-slate-900 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800">\${escapeHtml(item.url)}</div>
+                    <div class="grid grid-cols-3 gap-1.5 pt-1">
+                        <button onclick="toggleActive(\${item.id}, this)" class="h-9 rounded-xl bg-slate-100 dark:bg-slate-800 font-bold text-xs text-amber-700 dark:text-amber-300">\${item.is_active ? 'Pause' : 'Start'}</button>
+                        <button onclick="triggerPing(\${item.id}, this)" class="h-9 rounded-xl bg-orange-50 dark:bg-orange-600/20 font-bold text-xs text-orange-700 dark:text-orange-300">Ping</button>
+                        <button onclick="deleteUrl(\${item.id}, '\${escapeHtml(item.name)}')" class="h-9 rounded-xl bg-rose-50 dark:bg-rose-600/15 font-bold text-xs text-rose-700 dark:text-rose-300">Delete</button>
                     </div>
                 </div>
             \`).join('');
 
             tbody.innerHTML = urls.map(item => \`
-                <tr class="hover:bg-slate-900/50">
-                    <td class="px-6 py-4 font-semibold text-white">\${escapeHtml(item.name)}</td>
-                    <td class="px-6 py-4 font-mono text-xs text-orange-400 truncate max-w-xs">\${escapeHtml(item.url)}</td>
+                <tr class="hover:bg-slate-50 dark:hover:bg-slate-900/50">
+                    <td class="px-6 py-4 font-bold text-slate-900 dark:text-white">\${escapeHtml(item.name)}</td>
+                    <td class="px-6 py-4 font-mono text-xs text-orange-600 dark:text-orange-400 truncate max-w-xs">\${escapeHtml(item.url)}</td>
                     <td class="px-6 py-4">\${getStatusBadge(item.status, item.http_code, item.is_active)}</td>
-                    <td class="px-6 py-4 text-xs font-mono text-emerald-400">\${item.response_time_ms ? item.response_time_ms + ' ms' : '--'}</td>
-                    <td class="px-6 py-4 text-xs text-slate-400">\${formatRelativeTime(item.last_ping)}</td>
-                    <td class="px-6 py-4 text-right space-x-1">
-                        <button onclick="toggleActive(\${item.id}, this)" class="px-2 py-1 rounded bg-slate-800 text-xs text-amber-300">\${item.is_active ? 'Pause' : 'Start'}</button>
-                        <button onclick="triggerPing(\${item.id}, this)" class="px-2 py-1 rounded bg-slate-800 text-xs text-orange-300">Ping</button>
-                        <button onclick="deleteUrl(\${item.id}, '\${escapeHtml(item.name)}')" class="px-2 py-1 rounded bg-slate-800 text-xs text-rose-300">Delete</button>
+                    <td class="px-6 py-4 text-xs font-mono text-emerald-600 dark:text-emerald-400 font-bold">\${item.response_time_ms ? item.response_time_ms + ' ms' : '--'}</td>
+                    <td class="px-6 py-4 text-xs text-slate-500">\${formatRelativeTime(item.last_ping)}</td>
+                    <td class="px-6 py-4 text-right space-x-1.5">
+                        <button onclick="toggleActive(\${item.id}, this)" class="px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-bold text-amber-700 dark:text-amber-300">\${item.is_active ? 'Pause' : 'Start'}</button>
+                        <button onclick="triggerPing(\${item.id}, this)" class="px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-bold text-orange-700 dark:text-orange-300">Ping</button>
+                        <button onclick="deleteUrl(\${item.id}, '\${escapeHtml(item.name)}')" class="px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-bold text-rose-700 dark:text-rose-300">Delete</button>
                     </td>
                 </tr>
             \`).join('');
@@ -817,8 +818,7 @@ function renderDashboardHtml() {
         async function toggleActive(id, btn) {
             btn.disabled = true;
             try {
-                const res = await fetch('/api/urls/' + id + '/toggle', { method: 'POST', headers: getAuthHeaders() });
-                const data = await res.json();
+                await fetch('/api/urls/' + id + '/toggle', { method: 'POST', headers: getAuthHeaders() });
                 fetchData();
             } finally { btn.disabled = false; }
         }
@@ -828,11 +828,7 @@ function renderDashboardHtml() {
             const name = document.getElementById('project-name').value.trim();
             const url = document.getElementById('target-url').value.trim();
             try {
-                const res = await fetch('/api/urls', {
-                    method: 'POST',
-                    headers: getAuthHeaders(),
-                    body: JSON.stringify({ name, url })
-                });
+                await fetch('/api/urls', { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify({ name, url }) });
                 document.getElementById('project-name').value = '';
                 document.getElementById('target-url').value = '';
                 fetchData();
@@ -853,9 +849,18 @@ function renderDashboardHtml() {
         }
 
         async function deleteUrl(id, name) {
-            if (!confirm('Stop monitoring ' + name + '?')) return;
+            if (!confirm('Delete ' + name + '?')) return;
             await fetch('/api/urls/' + id, { method: 'DELETE', headers: getAuthHeaders() });
             fetchData();
+        }
+
+        function filterUrls() {
+            const q = document.getElementById('filter-input').value.toLowerCase();
+            renderAll(allUrls.filter(u => u.name.toLowerCase().includes(q) || u.url.toLowerCase().includes(q)));
+        }
+
+        function copyToClipboard(text) {
+            navigator.clipboard.writeText(text);
         }
 
         function escapeHtml(str) {

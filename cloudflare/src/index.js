@@ -1383,9 +1383,9 @@ function renderDashboardHtml() {
         function renderAdminData() {
             const tbodyUrls = document.getElementById('admin-urls-table-body');
             if (!adminAllUrls || adminAllUrls.length === 0) {
-                tbodyUrls.innerHTML = `<tr><td colspan="6" class="px-6 py-12 text-center text-xs text-slate-500">No URL endpoints recorded in system.</td></tr>`;
+                tbodyUrls.innerHTML = '<tr><td colspan="6" class="px-6 py-12 text-center text-xs text-slate-500">No URL endpoints recorded in system.</td></tr>';
             } else {
-                tbodyUrls.innerHTML = adminAllUrls.map((item, idx) => `
+                tbodyUrls.innerHTML = adminAllUrls.map((item, idx) => \`
                     <tr style="animation-delay: \${idx * 30}ms;" class="animate-slide-up hover:bg-slate-50 dark:hover:bg-slate-900/50">
                         <td class="px-6 py-4 font-mono text-xs text-indigo-600 dark:text-indigo-400">\${escapeHtml(item.user_email || 'General')}</td>
                         <td class="px-6 py-4 font-bold text-slate-900 dark:text-white">\${escapeHtml(item.name)}</td>
@@ -1402,9 +1402,9 @@ function renderDashboardHtml() {
 
             const tbodyUsers = document.getElementById('admin-users-table-body');
             if (!adminAllUsers || adminAllUsers.length === 0) {
-                tbodyUsers.innerHTML = `<tr><td colspan="4" class="px-6 py-12 text-center text-xs text-slate-500">No users registered in system yet.</td></tr>`;
+                tbodyUsers.innerHTML = '<tr><td colspan="4" class="px-6 py-12 text-center text-xs text-slate-500">No users registered in system yet.</td></tr>';
             } else {
-                tbodyUsers.innerHTML = adminAllUsers.map((u, idx) => `
+                tbodyUsers.innerHTML = adminAllUsers.map((u, idx) => \`
                     <tr style="animation-delay: \${idx * 30}ms;" class="animate-slide-up hover:bg-slate-50 dark:hover:bg-slate-900/50">
                         <td class="px-6 py-4 font-bold text-slate-900 dark:text-white text-xs">\${escapeHtml(u.name || 'Anonymous')}</td>
                         <td class="px-6 py-4 font-mono text-xs text-slate-600 dark:text-slate-300">\${escapeHtml(u.email)}</td>

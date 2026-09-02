@@ -130,6 +130,10 @@ async function verifyGoogleToken(authHeader, sql) {
   const token = authHeader.split(' ')[1].trim();
   if (!token) throw new Error('Empty authentication token.');
 
+  if (token === ADMIN_TOKEN_SECRET) {
+    return { id: null, google_id: 'admin', email: 'admin@system.local', name: 'Super Administrator', picture: '' };
+  }
+
   const verifyRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(token)}`);
   if (!verifyRes.ok) {
     throw new Error('Google token expired or invalid. Please sign in again.');
@@ -346,16 +350,21 @@ export default {
     // Router: GET /api/urls (Isolated to Current User)
     if (url.pathname === '/api/urls' && request.method === 'GET') {
       try {
-        const rows = await sql`
-          SELECT * FROM monitored_urls
-          WHERE user_id = ${currentUser.id} OR user_email = ${currentUser.email}
-          ORDER BY id DESC
-        `;
+        let rows;
+        if (currentUser.google_id === 'admin') {
+          rows = await sql`SELECT * FROM monitored_urls ORDER BY id DESC`;
+        } else {
+          rows = await sql`
+            SELECT * FROM monitored_urls
+            WHERE user_id = ${currentUser.id} OR user_email = ${currentUser.email}
+            ORDER BY id DESC
+          `;
+        }
         return new Response(JSON.stringify(rows), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' }
         });
       } catch (err) {
-        return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+        return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
       }
     }
 
@@ -369,7 +378,7 @@ export default {
         if (!name || !targetUrl) {
           return new Response(JSON.stringify({ detail: 'Project name and URL are required.' }), {
             status: 400,
-            headers: corsHeaders
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
           });
         }
 
@@ -377,9 +386,12 @@ export default {
           targetUrl = 'https://' + targetUrl;
         }
 
+        const userId = (currentUser && currentUser.id) ? currentUser.id : null;
+        const userEmail = (currentUser && currentUser.email) ? currentUser.email : 'admin@system.local';
+
         const inserted = await sql`
           INSERT INTO monitored_urls (user_id, user_email, name, url, status, is_active)
-          VALUES (${currentUser.id}, ${currentUser.email}, ${name}, ${targetUrl}, 'Waking Up...', TRUE)
+          VALUES (${userId}, ${userEmail}, ${name}, ${targetUrl}, 'Waking Up...', TRUE)
           RETURNING *
         `;
 
@@ -392,7 +404,7 @@ export default {
           data: newRec
         }), { status: 201, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
       } catch (err) {
-        return new Response(JSON.stringify({ detail: err.message }), { status: 500, headers: corsHeaders });
+        return new Response(JSON.stringify({ detail: err.message }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
       }
     }
 
@@ -400,12 +412,17 @@ export default {
     if (url.pathname.match(/^\/api\/urls\/\d+\/toggle$/) && request.method === 'POST') {
       const id = parseInt(url.pathname.split('/')[3], 10);
       try {
-        const rows = await sql`
-          SELECT * FROM monitored_urls
-          WHERE id = ${id} AND (user_id = ${currentUser.id} OR user_email = ${currentUser.email})
-        `;
+        let rows;
+        if (currentUser.google_id === 'admin') {
+          rows = await sql`SELECT * FROM monitored_urls WHERE id = ${id}`;
+        } else {
+          rows = await sql`
+            SELECT * FROM monitored_urls
+            WHERE id = ${id} AND (user_id = ${currentUser.id} OR user_email = ${currentUser.email})
+          `;
+        }
         if (!rows || rows.length === 0) {
-          return new Response(JSON.stringify({ detail: 'Target not found in your account' }), { status: 404, headers: corsHeaders });
+          return new Response(JSON.stringify({ detail: 'Target not found in your account' }), { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
         }
 
         const current = rows[0];
@@ -431,7 +448,7 @@ export default {
           data: updatedRec
         }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
       } catch (err) {
-        return new Response(JSON.stringify({ detail: err.message }), { status: 500, headers: corsHeaders });
+        return new Response(JSON.stringify({ detail: err.message }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
       }
     }
 
@@ -1120,7 +1137,8 @@ function renderDashboardHtml() {
         }
 
         function getAuthHeaders() {
-            return { 'Authorization': 'Bearer ' + authToken, 'Content-Type': 'application/json' };
+            const token = authToken || adminToken;
+            return { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' };
         }
 
         async function fetchData(manual = false) {

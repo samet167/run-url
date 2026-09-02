@@ -871,11 +871,11 @@ function renderDashboardHtml() {
             <form onsubmit="handleSuperAdminLogin(event)" class="space-y-3 pt-2">
                 <div>
                     <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Username</label>
-                    <input type="text" id="admin-username" required placeholder="admin" value="admin" class="w-full h-10 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl px-3 text-xs font-mono text-slate-900 dark:text-white">
+                    <input type="text" id="admin-username" required placeholder="Enter admin username" class="w-full h-10 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl px-3 text-xs font-mono text-slate-900 dark:text-white">
                 </div>
                 <div>
                     <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Password</label>
-                    <input type="password" id="admin-password" required placeholder="12345678" value="12345678" class="w-full h-10 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl px-3 text-xs font-mono text-slate-900 dark:text-white">
+                    <input type="password" id="admin-password" required placeholder="••••••••" class="w-full h-10 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl px-3 text-xs font-mono text-slate-900 dark:text-white">
                 </div>
                 <button type="submit" id="btn-submit-admin-login" class="w-full h-10 rounded-xl font-bold text-xs bg-amber-500 text-slate-950 active:scale-95 cursor-pointer mt-2">
                     Authenticate as SuperAdmin
@@ -994,6 +994,8 @@ function renderDashboardHtml() {
         let adminToken = localStorage.getItem('keepalive_admin_token') || null;
         let adminAllUrls = [];
         let adminAllUsers = [];
+        let cachedAdminUrls = [];
+        let cachedAdminUsers = [];
         let currentAdminTab = 'urls';
 
         function setLanguage(lang) {
@@ -1335,9 +1337,15 @@ function renderDashboardHtml() {
                     fetch('/api/admin/urls', { headers: { 'Authorization': 'Bearer ' + adminToken } }),
                     fetch('/api/admin/users', { headers: { 'Authorization': 'Bearer ' + adminToken } })
                 ]);
+                if (!statsRes.ok || !urlsRes.ok || !usersRes.ok) {
+                    const errData = await statsRes.json().catch(() => ({}));
+                    throw new Error(errData.detail || 'Admin fetch failed');
+                }
                 const stats = await statsRes.json();
-                adminAllUrls = await urlsRes.json();
-                adminAllUsers = await usersRes.json();
+                cachedAdminUrls = await urlsRes.json();
+                cachedAdminUsers = await usersRes.json();
+                adminAllUrls = [...cachedAdminUrls];
+                adminAllUsers = [...cachedAdminUsers];
 
                 document.getElementById('admin-stat-users').innerText = stats.total_users || 0;
                 document.getElementById('admin-stat-urls').innerText = stats.total_urls || 0;
@@ -1345,8 +1353,8 @@ function renderDashboardHtml() {
                 document.getElementById('admin-stat-paused').innerText = stats.paused || 0;
                 document.getElementById('admin-stat-failed').innerText = stats.failed || 0;
 
-                document.getElementById('admin-tab-count-urls').innerText = adminAllUrls.length;
-                document.getElementById('admin-tab-count-users').innerText = adminAllUsers.length;
+                document.getElementById('admin-tab-count-urls').innerText = cachedAdminUrls.length;
+                document.getElementById('admin-tab-count-users').innerText = cachedAdminUsers.length;
 
                 renderAdminData();
             } catch (err) { console.error(err); }
@@ -1374,29 +1382,37 @@ function renderDashboardHtml() {
 
         function renderAdminData() {
             const tbodyUrls = document.getElementById('admin-urls-table-body');
-            tbodyUrls.innerHTML = adminAllUrls.map((item, idx) => \`
-                <tr style="animation-delay: \${idx * 30}ms;" class="animate-slide-up hover:bg-slate-50 dark:hover:bg-slate-900/50">
-                    <td class="px-6 py-4 font-mono text-xs text-indigo-600 dark:text-indigo-400">\${escapeHtml(item.user_email || 'General')}</td>
-                    <td class="px-6 py-4 font-bold text-slate-900 dark:text-white">\${escapeHtml(item.name)}</td>
-                    <td class="px-6 py-4 font-mono text-xs text-amber-600 dark:text-amber-400 truncate max-w-xs">\${escapeHtml(item.url)}</td>
-                    <td class="px-6 py-4">\${getStatusBadge(item.status, item.http_code, item.is_active)}</td>
-                    <td class="px-6 py-4 text-xs font-mono">\${item.response_time_ms ? item.response_time_ms + ' ms' : '--'}</td>
-                    <td class="px-6 py-4 text-right space-x-1.5">
-                        <button onclick="adminToggleUrl(\${item.id})" class="px-2.5 py-1 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-bold text-amber-700 dark:text-amber-300">\${item.is_active ? 'Pause' : 'Start'}</button>
-                        <button onclick="adminDeleteUrl(\${item.id}, '\${escapeHtml(item.name)}')" class="px-2.5 py-1 rounded-xl bg-rose-50 dark:bg-rose-950/80 text-xs font-bold text-rose-600">Delete</button>
-                    </td>
-                </tr>
-            \`).join('');
+            if (!adminAllUrls || adminAllUrls.length === 0) {
+                tbodyUrls.innerHTML = `<tr><td colspan="6" class="px-6 py-12 text-center text-xs text-slate-500">No URL endpoints recorded in system.</td></tr>`;
+            } else {
+                tbodyUrls.innerHTML = adminAllUrls.map((item, idx) => `
+                    <tr style="animation-delay: \${idx * 30}ms;" class="animate-slide-up hover:bg-slate-50 dark:hover:bg-slate-900/50">
+                        <td class="px-6 py-4 font-mono text-xs text-indigo-600 dark:text-indigo-400">\${escapeHtml(item.user_email || 'General')}</td>
+                        <td class="px-6 py-4 font-bold text-slate-900 dark:text-white">\${escapeHtml(item.name)}</td>
+                        <td class="px-6 py-4 font-mono text-xs text-amber-600 dark:text-amber-400 truncate max-w-xs">\${escapeHtml(item.url)}</td>
+                        <td class="px-6 py-4">\${getStatusBadge(item.status, item.http_code, item.is_active)}</td>
+                        <td class="px-6 py-4 text-xs font-mono">\${item.response_time_ms ? item.response_time_ms + ' ms' : '--'}</td>
+                        <td class="px-6 py-4 text-right space-x-1.5">
+                            <button onclick="adminToggleUrl(\${item.id})" class="px-2.5 py-1 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-bold text-amber-700 dark:text-amber-300">\${item.is_active ? 'Pause' : 'Start'}</button>
+                            <button onclick="adminDeleteUrl(\${item.id}, '\${escapeHtml(item.name)}')" class="px-2.5 py-1 rounded-xl bg-rose-50 dark:bg-rose-950/80 text-xs font-bold text-rose-600">Delete</button>
+                        </td>
+                    </tr>
+                \`).join('');
+            }
 
             const tbodyUsers = document.getElementById('admin-users-table-body');
-            tbodyUsers.innerHTML = adminAllUsers.map((u, idx) => \`
-                <tr style="animation-delay: \${idx * 30}ms;" class="animate-slide-up hover:bg-slate-50 dark:hover:bg-slate-900/50">
-                    <td class="px-6 py-4 font-bold text-slate-900 dark:text-white text-xs">\${escapeHtml(u.name || 'Anonymous')}</td>
-                    <td class="px-6 py-4 font-mono text-xs text-slate-600 dark:text-slate-300">\${escapeHtml(u.email)}</td>
-                    <td class="px-6 py-4 text-xs font-bold text-emerald-600">\${u.total_urls} apps</td>
-                    <td class="px-6 py-4 text-xs text-slate-500">\${formatRelativeTime(u.created_at)}</td>
-                </tr>
-            \`).join('');
+            if (!adminAllUsers || adminAllUsers.length === 0) {
+                tbodyUsers.innerHTML = `<tr><td colspan="4" class="px-6 py-12 text-center text-xs text-slate-500">No users registered in system yet.</td></tr>`;
+            } else {
+                tbodyUsers.innerHTML = adminAllUsers.map((u, idx) => `
+                    <tr style="animation-delay: \${idx * 30}ms;" class="animate-slide-up hover:bg-slate-50 dark:hover:bg-slate-900/50">
+                        <td class="px-6 py-4 font-bold text-slate-900 dark:text-white text-xs">\${escapeHtml(u.name || 'Anonymous')}</td>
+                        <td class="px-6 py-4 font-mono text-xs text-slate-600 dark:text-slate-300">\${escapeHtml(u.email)}</td>
+                        <td class="px-6 py-4 text-xs font-bold text-emerald-600">\${u.total_urls} apps</td>
+                        <td class="px-6 py-4 text-xs text-slate-500">\${formatRelativeTime(u.created_at)}</td>
+                    </tr>
+                \`).join('');
+            }
             lucide.createIcons();
         }
 
@@ -1423,9 +1439,21 @@ function renderDashboardHtml() {
         }
 
         function filterAdminData() {
-            const q = document.getElementById('admin-filter-input').value.toLowerCase();
-            const filteredUrls = adminAllUrls.filter(u => (u.name || '').toLowerCase().includes(q) || (u.url || '').toLowerCase().includes(q) || (u.user_email || '').toLowerCase().includes(q));
-            adminAllUrls = filteredUrls;
+            const q = (document.getElementById('admin-filter-input')?.value || '').toLowerCase().trim();
+            if (!q) {
+                adminAllUrls = [...cachedAdminUrls];
+                adminAllUsers = [...cachedAdminUsers];
+            } else {
+                adminAllUrls = cachedAdminUrls.filter(u => 
+                    (u.name || '').toLowerCase().includes(q) || 
+                    (u.url || '').toLowerCase().includes(q) || 
+                    (u.user_email || '').toLowerCase().includes(q)
+                );
+                adminAllUsers = cachedAdminUsers.filter(u =>
+                    (u.name || '').toLowerCase().includes(q) ||
+                    (u.email || '').toLowerCase().includes(q)
+                );
+            }
             renderAdminData();
         }
 

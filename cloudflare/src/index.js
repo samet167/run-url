@@ -629,7 +629,7 @@ function renderDashboardHtml() {
                 </button>
 
                 <button onclick="toggleLanguage()" id="lang-toggle-btn" class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-800 text-xs font-bold active:scale-95 cursor-pointer">
-                    <span id="lang-flag" class="text-sm">🇰🇭</span>
+                    <i data-lucide="globe" class="w-3.5 h-3.5 text-slate-500"></i>
                     <span id="lang-label" class="font-mono text-[11px]">ខ្មែរ</span>
                 </button>
 
@@ -809,10 +809,10 @@ function renderDashboardHtml() {
                 <div class="px-4 sm:px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
                     <div class="flex items-center gap-2">
                         <button onclick="switchAdminTab('urls')" id="tab-btn-urls" class="px-3 py-1.5 rounded-xl text-xs font-bold bg-amber-500 text-slate-950">
-                            🌐 All Endpoints Master (<span id="admin-tab-count-urls">0</span>)
+                            All Endpoints Master (<span id="admin-tab-count-urls">0</span>)
                         </button>
                         <button onclick="switchAdminTab('users')" id="tab-btn-users" class="px-3 py-1.5 rounded-xl text-xs font-bold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">
-                            👥 Registered Users (<span id="admin-tab-count-users">0</span>)
+                            Registered Users (<span id="admin-tab-count-users">0</span>)
                         </button>
                     </div>
                     <div class="w-full sm:w-64 relative">
@@ -890,14 +890,14 @@ function renderDashboardHtml() {
         <button onclick="triggerPingAll()" class="flex flex-col items-center gap-1 text-slate-600 dark:text-slate-400 active:scale-90"><i data-lucide="zap" class="w-5 h-5"></i><span data-i18n="dockSweep" class="text-[10px] font-bold">Sweep</span></button>
         <button onclick="openSuperAdminModal()" class="flex flex-col items-center gap-1 text-amber-600 dark:text-amber-400 active:scale-90"><i data-lucide="shield" class="w-5 h-5"></i><span class="text-[10px] font-bold">Admin</span></button>
         <button onclick="fetchData(true)" class="flex flex-col items-center gap-1 text-slate-600 dark:text-slate-400 active:scale-90"><i data-lucide="rotate-cw" class="w-5 h-5"></i><span data-i18n="dockSync" class="text-[10px] font-bold">Sync</span></button>
-        <button onclick="toggleLanguage()" class="flex flex-col items-center gap-1 text-slate-600 dark:text-slate-400 active:scale-90"><span id="dock-lang-flag" class="text-base leading-none">🇰🇭</span><span id="dock-lang-label" class="text-[10px] font-bold">ភាសា</span></button>
+        <button onclick="toggleLanguage()" class="flex flex-col items-center gap-1 text-slate-600 dark:text-slate-400 active:scale-90"><i data-lucide="globe" class="w-5 h-5"></i><span id="dock-lang-label" class="text-[10px] font-bold">ភាសា</span></button>
     </nav>
 
     <footer class="border-t border-slate-200 dark:border-slate-800/80 py-6 text-center text-xs text-slate-500 dark:text-slate-400 px-4 mt-8 flex flex-col sm:flex-row items-center justify-center gap-3">
         <p>KeepAlive Hub &bull; 24/7 Render Keep-Awake Engine &bull; Neon PostgreSQL</p>
         <span class="hidden sm:inline">&bull;</span>
         <button onclick="openSuperAdminModal()" class="text-amber-600 dark:text-amber-400 font-bold hover:underline cursor-pointer">
-            SuperAdmin Portal 👑
+            SuperAdmin Portal
         </button>
     </footer>
 
@@ -1002,19 +1002,13 @@ function renderDashboardHtml() {
             currentLang = lang;
             localStorage.setItem('keepalive_lang', lang);
             document.documentElement.lang = lang;
-            const flagElem = document.getElementById('lang-flag');
             const labelElem = document.getElementById('lang-label');
-            const dockFlag = document.getElementById('dock-lang-flag');
             const dockLabel = document.getElementById('dock-lang-label');
             if (lang === 'km') {
-                if (flagElem) flagElem.innerText = '🇰🇭';
                 if (labelElem) labelElem.innerText = 'ខ្មែរ';
-                if (dockFlag) dockFlag.innerText = '🇰🇭';
                 if (dockLabel) dockLabel.innerText = 'ខ្មែរ';
             } else {
-                if (flagElem) flagElem.innerText = '🇺🇸';
                 if (labelElem) labelElem.innerText = 'ENG';
-                if (dockFlag) dockFlag.innerText = '🇺🇸';
                 if (dockLabel) dockLabel.innerText = 'ENG';
             }
             document.querySelectorAll('[data-i18n]').forEach(el => {

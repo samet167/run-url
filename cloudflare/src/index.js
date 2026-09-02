@@ -92,9 +92,7 @@ async function ensureTable(sql) {
     await sql`ALTER TABLE monitored_urls ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;`;
     await sql`ALTER TABLE monitored_urls ADD COLUMN IF NOT EXISTS user_id INT;`;
     await sql`ALTER TABLE monitored_urls ADD COLUMN IF NOT EXISTS user_email VARCHAR(255);`;
-  } catch (e) {
-    // Columns already exist
-  }
+  } catch (e) {}
 }
 
 async function pingAndSaveUrl(sql, id, url) {
@@ -275,7 +273,7 @@ export default {
 
         return new Response(JSON.stringify({
           success: true,
-          message: `Successfully added '${name}'. Health check triggered.`,
+          message: `Successfully added '${name}'.`,
           data: newRec
         }), { status: 201, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
       } catch (err) {
@@ -409,18 +407,18 @@ export default {
 };
 
 // -----------------------------------------------------------------------------
-// Cloudflare Worker Embedded Responsive HTML (Dark/Light + Native Mobile Dock)
+// Cloudflare Worker Embedded Dashboard HTML (Bilingual Khmer + English)
 // -----------------------------------------------------------------------------
 function renderDashboardHtml() {
   return `<!DOCTYPE html>
-<html lang="en" class="dark">
+<html lang="km" class="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>KeepAlive Hub &bull; 24/7 Render Keep-Awake Engine</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Kantumruy+Pro:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
     <script src="https://accounts.google.com/gsi/client" async defer></script>
@@ -430,7 +428,7 @@ function renderDashboardHtml() {
             theme: {
                 extend: {
                     fontFamily: {
-                        sans: ['"Plus Jakarta Sans"', 'sans-serif'],
+                        sans: ['"Kantumruy Pro"', '"Plus Jakarta Sans"', 'sans-serif'],
                         mono: ['"JetBrains Mono"', 'monospace'],
                     },
                     screens: { 'xs': '420px' },
@@ -504,11 +502,16 @@ function renderDashboardHtml() {
                         <span class="text-sm sm:text-base font-extrabold tracking-tight text-slate-900 dark:text-white">KeepAlive</span>
                         <span class="text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider bg-orange-100 text-orange-700 dark:bg-orange-500/15 dark:text-orange-400 border border-orange-300/40 dark:border-orange-500/30">Edge</span>
                     </div>
-                    <p class="hidden xs:block text-[11px] text-slate-500 dark:text-slate-400 truncate">Cloudflare Native 24/7 Engine</p>
+                    <p data-i18n="tagline" class="hidden xs:block text-[11px] text-slate-500 dark:text-slate-400 truncate">ប្រព័ន្ធដាស់ Render 24/7 ស្វ័យប្រវត្តិ</p>
                 </div>
             </div>
 
             <div class="flex items-center gap-2 sm:gap-2.5 shrink-0">
+                <button onclick="toggleLanguage()" id="lang-toggle-btn" class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-800 text-xs font-bold active:scale-95 cursor-pointer">
+                    <span id="lang-flag" class="text-sm">🇰🇭</span>
+                    <span id="lang-label" class="font-mono text-[11px]">ខ្មែរ</span>
+                </button>
+
                 <button onclick="toggleTheme()" id="theme-toggle-btn" class="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-800 active:scale-95 cursor-pointer">
                     <i data-lucide="sun" class="w-4 h-4 hidden dark:block text-amber-400"></i>
                     <i data-lucide="moon" class="w-4 h-4 block dark:hidden text-slate-700"></i>
@@ -517,7 +520,7 @@ function renderDashboardHtml() {
                 <div id="auth-controls" class="hidden flex items-center gap-2">
                     <button onclick="triggerPingAll()" id="btn-sweep-all" class="hidden sm:inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-orange-600 hover:bg-orange-500 text-white shadow-md shadow-orange-600/20 active:scale-95 cursor-pointer">
                         <i data-lucide="activity" class="w-3.5 h-3.5"></i>
-                        <span>Sweep All</span>
+                        <span data-i18n="sweepAll">Sweep ទាំងអស់</span>
                     </button>
                     <button onclick="fetchData(true)" class="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 active:scale-95 cursor-pointer">
                         <i data-lucide="rotate-cw" id="refresh-icon" class="w-4 h-4"></i>
@@ -537,7 +540,7 @@ function renderDashboardHtml() {
                 <div id="unauth-header-btn" class="flex items-center">
                     <button onclick="promptGoogleSignIn()" class="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold bg-slate-900 hover:bg-slate-800 text-white dark:bg-white dark:text-slate-900 shadow-sm active:scale-95 cursor-pointer">
                         <svg class="w-4 h-4" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/></svg>
-                        <span>Sign In</span>
+                        <span data-i18n="signIn">ចូលប្រើ (Sign In)</span>
                     </button>
                 </div>
             </div>
@@ -546,39 +549,39 @@ function renderDashboardHtml() {
 
     <main class="flex-1 max-w-7xl w-full mx-auto px-3.5 sm:px-6 lg:px-8 py-4 sm:py-7">
         <section id="login-hero-view" class="max-w-3xl mx-auto my-6 sm:my-12 text-center space-y-6">
-            <h2 class="text-3xl sm:text-5xl font-extrabold tracking-tight text-slate-900 dark:text-white leading-[1.15]">
-                Prevent Cold Boots.<br>
-                <span class="bg-gradient-to-r from-orange-600 via-amber-500 to-emerald-600 dark:from-orange-400 dark:via-amber-300 dark:to-emerald-400 bg-clip-text text-transparent">Keep Render 24/7 Awake.</span>
+            <h2 class="text-3xl sm:text-5xl font-extrabold tracking-tight text-slate-900 dark:text-white leading-[1.25]">
+                <span data-i18n="heroTitle1">កម្ចាត់បញ្ហា Sleep លើ Render.</span><br>
+                <span data-i18n="heroTitle2" class="bg-gradient-to-r from-orange-600 via-amber-500 to-emerald-600 dark:from-orange-400 dark:via-amber-300 dark:to-emerald-400 bg-clip-text text-transparent">ដាស់ Server ភ្ញាក់ ២៤/៧ ជាប់ជានិច្ច។</span>
             </h2>
-            <p class="text-slate-600 dark:text-slate-300 text-sm sm:text-base max-w-xl mx-auto">
-                Connect your Google Account to manage your private list of Render apps.
+            <p data-i18n="heroDesc" class="text-slate-600 dark:text-slate-300 text-sm sm:text-base max-w-xl mx-auto">
+                ភ្ជាប់ជាមួយ Google Account ដើម្បីគ្រប់គ្រង Render Apps ផ្ទាល់ខ្លួនរបស់អ្នក។
             </p>
             <div class="theme-glass p-6 sm:p-8 rounded-3xl shadow-card-light dark:shadow-card-dark max-w-md mx-auto space-y-5 mt-6">
-                <h3 class="text-base font-bold text-slate-900 dark:text-white">Sign In to Dashboard</h3>
+                <h3 data-i18n="loginBoxTitle" class="text-base font-bold text-slate-900 dark:text-white">ចូលប្រើ Dashboard</h3>
                 <div class="flex justify-center pt-2"><div id="g_id_signin_container"></div></div>
             </div>
         </section>
 
         <div id="authenticated-dashboard" class="hidden space-y-4 sm:space-y-6">
             <section class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5 sm:gap-4">
-                <div class="theme-surface p-4 rounded-2xl shadow-card-light dark:shadow-card-dark">
-                    <span class="text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">Total</span>
+                <div class="theme-surface p-4 rounded-2xl shadow-card-light dark:shadow-card-dark hover-lift">
+                    <span data-i18n="statTotal" class="text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">សរុប (Total)</span>
                     <span id="metric-total" class="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white font-mono">0</span>
                 </div>
-                <div class="theme-surface p-4 rounded-2xl shadow-card-light dark:shadow-card-dark border-emerald-500/30">
-                    <span class="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider block">Awake</span>
+                <div class="theme-surface p-4 rounded-2xl shadow-card-light dark:shadow-card-dark border-emerald-500/30 hover-lift">
+                    <span data-i18n="statOnline" class="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider block">ភ្ញាក់ (Awake)</span>
                     <span id="metric-alive" class="text-2xl sm:text-3xl font-extrabold text-emerald-600 dark:text-emerald-400 font-mono">0</span>
                 </div>
-                <div class="theme-surface p-4 rounded-2xl shadow-card-light dark:shadow-card-dark border-amber-500/30">
-                    <span class="text-[11px] font-bold text-amber-600 dark:text-amber-300 uppercase tracking-wider block">Paused</span>
+                <div class="theme-surface p-4 rounded-2xl shadow-card-light dark:shadow-card-dark border-amber-500/30 hover-lift">
+                    <span data-i18n="statPaused" class="text-[11px] font-bold text-amber-600 dark:text-amber-300 uppercase tracking-wider block">ផ្អាក (Paused)</span>
                     <span id="metric-paused" class="text-2xl sm:text-3xl font-extrabold text-amber-600 dark:text-amber-300 font-mono">0</span>
                 </div>
-                <div class="theme-surface p-4 rounded-2xl shadow-card-light dark:shadow-card-dark border-sky-500/30">
-                    <span class="text-[11px] font-bold text-sky-600 dark:text-sky-400 uppercase tracking-wider block">Waking</span>
+                <div class="theme-surface p-4 rounded-2xl shadow-card-light dark:shadow-card-dark border-sky-500/30 hover-lift">
+                    <span data-i18n="statWaking" class="text-[11px] font-bold text-sky-600 dark:text-sky-400 uppercase tracking-wider block">កំពុងភ្ញាក់ (Waking)</span>
                     <span id="metric-waking" class="text-2xl sm:text-3xl font-extrabold text-sky-600 dark:text-sky-400 font-mono">0</span>
                 </div>
-                <div class="theme-surface p-4 rounded-2xl shadow-card-light dark:shadow-card-dark border-rose-500/30 col-span-2 sm:col-span-1">
-                    <span class="text-[11px] font-bold text-rose-600 dark:text-rose-400 uppercase tracking-wider block">Offline</span>
+                <div class="theme-surface p-4 rounded-2xl shadow-card-light dark:shadow-card-dark border-rose-500/30 col-span-2 sm:col-span-1 hover-lift">
+                    <span data-i18n="statOffline" class="text-[11px] font-bold text-rose-600 dark:text-rose-400 uppercase tracking-wider block">ដាច់ (Offline)</span>
                     <span id="metric-failed" class="text-2xl sm:text-3xl font-extrabold text-rose-600 dark:text-rose-400 font-mono">0</span>
                 </div>
             </section>
@@ -586,15 +589,15 @@ function renderDashboardHtml() {
             <section class="theme-surface p-4 sm:p-6 rounded-3xl shadow-card-light dark:shadow-card-dark">
                 <form id="add-url-form" onsubmit="handleAddUrl(event)" class="grid grid-cols-1 md:grid-cols-12 gap-3 sm:gap-4 items-end">
                     <div class="md:col-span-4">
-                        <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">App Name</label>
-                        <input type="text" id="project-name" required placeholder="e.g. Pharmacy POS Backend" class="w-full h-11 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700/80 rounded-2xl px-3.5 text-sm text-slate-900 dark:text-white">
+                        <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5" data-i18n="formAppName">ឈ្មោះ App</label>
+                        <input type="text" id="project-name" required placeholder="ឧ. Pharmacy POS Backend" class="w-full h-11 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700/80 rounded-2xl px-3.5 text-sm text-slate-900 dark:text-white">
                     </div>
                     <div class="md:col-span-6">
-                        <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">Render Service URL</label>
+                        <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5" data-i18n="formAppUrl">Render Service URL</label>
                         <input type="text" id="target-url" required placeholder="https://my-service.onrender.com/" class="w-full h-11 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700/80 rounded-2xl px-3.5 text-sm font-mono text-slate-900 dark:text-white">
                     </div>
                     <div class="md:col-span-2">
-                        <button type="submit" id="btn-submit-url" class="w-full h-11 rounded-2xl font-bold text-sm bg-gradient-to-r from-orange-600 to-amber-600 text-white active:scale-95 cursor-pointer">Add App</button>
+                        <button type="submit" id="btn-submit-url" class="w-full h-11 rounded-2xl font-bold text-sm bg-gradient-to-r from-orange-600 to-amber-600 text-white active:scale-95 cursor-pointer" data-i18n="btnAddApp">បន្ថែម App</button>
                     </div>
                 </form>
             </section>
@@ -603,7 +606,7 @@ function renderDashboardHtml() {
                 <div class="px-4 sm:px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
                     <div class="flex items-center gap-2">
                         <i data-lucide="layers" class="w-4 h-4 text-orange-500"></i>
-                        <h3 class="text-sm sm:text-base font-bold text-slate-900 dark:text-white">Managed Endpoints</h3>
+                        <h3 data-i18n="tableTitle" class="text-sm sm:text-base font-bold text-slate-900 dark:text-white">បញ្ជី Endpoints របស់អ្នក</h3>
                     </div>
                     <div class="w-full sm:w-64 relative">
                         <input type="text" id="filter-input" oninput="filterUrls()" placeholder="Search..." class="w-full h-9 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-xl px-3 text-xs text-slate-900 dark:text-white">
@@ -615,40 +618,150 @@ function renderDashboardHtml() {
                     <table class="w-full text-left text-sm">
                         <thead class="bg-slate-50 dark:bg-slate-900/60 border-b border-slate-200 dark:border-slate-800 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase">
                             <tr>
-                                <th class="px-6 py-3.5">Deployment Name</th>
-                                <th class="px-6 py-3.5">Target Endpoint</th>
-                                <th class="px-6 py-3.5">Live Status</th>
-                                <th class="px-6 py-3.5">Latency</th>
-                                <th class="px-6 py-3.5">Last Sweep</th>
-                                <th class="px-6 py-3.5 text-right">Actions</th>
+                                <th class="px-6 py-3.5" data-i18n="thName">ឈ្មោះ App</th>
+                                <th class="px-6 py-3.5" data-i18n="thUrl">Target Endpoint</th>
+                                <th class="px-6 py-3.5" data-i18n="thStatus">ស្ថានភាព (Status)</th>
+                                <th class="px-6 py-3.5" data-i18n="thLatency">ល្បឿន (Latency)</th>
+                                <th class="px-6 py-3.5" data-i18n="thLastSweep">Sweep ចុងក្រោយ</th>
+                                <th class="px-6 py-3.5 text-right" data-i18n="thActions">សកម្មភាព</th>
                             </tr>
                         </thead>
                         <tbody id="url-table-body" class="divide-y divide-slate-100 dark:divide-slate-800/60"></tbody>
                     </table>
                 </div>
                 <div id="empty-state-view" class="hidden px-4 py-12 text-center text-slate-500">
-                    <p class="text-xs">No Render Apps Monitored yet.</p>
+                    <p data-i18n="emptyTitle" class="text-xs">មិនទាន់មាន App ណាត្រូវបាន Monitor នៅឡើយទេ។</p>
                 </div>
             </section>
         </div>
     </main>
 
     <nav id="mobile-dock" class="fixed bottom-0 inset-x-0 z-40 md:hidden bg-white/95 dark:bg-[#070a11]/95 backdrop-blur-xl border-t border-slate-200 dark:border-slate-800 px-4 py-2 flex items-center justify-around shadow-2xl">
-        <button onclick="window.scrollTo({top:0,behavior:'smooth'})" class="flex flex-col items-center gap-1 text-slate-600 dark:text-slate-400 active:scale-90"><i data-lucide="home" class="w-5 h-5"></i><span class="text-[10px] font-bold">Home</span></button>
-        <button onclick="triggerPingAll()" class="flex flex-col items-center gap-1 text-slate-600 dark:text-slate-400 active:scale-90"><i data-lucide="zap" class="w-5 h-5"></i><span class="text-[10px] font-bold">Sweep</span></button>
-        <button onclick="fetchData(true)" class="flex flex-col items-center gap-1 text-slate-600 dark:text-slate-400 active:scale-90"><i data-lucide="rotate-cw" class="w-5 h-5"></i><span class="text-[10px] font-bold">Sync</span></button>
-        <button onclick="toggleTheme()" class="flex flex-col items-center gap-1 text-slate-600 dark:text-slate-400 active:scale-90"><i data-lucide="sun-moon" class="w-5 h-5"></i><span class="text-[10px] font-bold">Theme</span></button>
+        <button onclick="window.scrollTo({top:0,behavior:'smooth'})" class="flex flex-col items-center gap-1 text-slate-600 dark:text-slate-400 active:scale-90"><i data-lucide="home" class="w-5 h-5"></i><span data-i18n="dockHome" class="text-[10px] font-bold">ទំព័រដើម</span></button>
+        <button onclick="triggerPingAll()" class="flex flex-col items-center gap-1 text-slate-600 dark:text-slate-400 active:scale-90"><i data-lucide="zap" class="w-5 h-5"></i><span data-i18n="dockSweep" class="text-[10px] font-bold">Sweep</span></button>
+        <button onclick="fetchData(true)" class="flex flex-col items-center gap-1 text-slate-600 dark:text-slate-400 active:scale-90"><i data-lucide="rotate-cw" class="w-5 h-5"></i><span data-i18n="dockSync" class="text-[10px] font-bold">Sync</span></button>
+        <button onclick="toggleLanguage()" class="flex flex-col items-center gap-1 text-slate-600 dark:text-slate-400 active:scale-90"><span id="dock-lang-flag" class="text-base leading-none">🇰🇭</span><span id="dock-lang-label" class="text-[10px] font-bold">ភាសា</span></button>
     </nav>
 
     <div id="toast-container" class="fixed bottom-16 sm:bottom-4 inset-x-3 sm:inset-x-auto sm:right-5 z-50 flex flex-col gap-2 pointer-events-none"></div>
 
     <script>
         const GOOGLE_CLIENT_ID = '` + GOOGLE_CLIENT_ID + `';
+        const i18n = {
+            km: {
+                tagline: "ប្រព័ន្ធដាស់ Render 24/7 ស្វ័យប្រវត្តិ",
+                signIn: "ចូលប្រើ (Sign In)",
+                sweepAll: "Sweep ទាំងអស់",
+                heroTitle1: "កម្ចាត់បញ្ហា Sleep លើ Render.",
+                heroTitle2: "ដាស់ Server ភ្ញាក់ ២៤/៧ ជាប់ជានិច្ច។",
+                heroDesc: "ភ្ជាប់ជាមួយ Google Account ដើម្បីគ្រប់គ្រង Render Apps ផ្ទាល់ខ្លួនរបស់អ្នក។",
+                loginBoxTitle: "ចូលប្រើ Dashboard",
+                statTotal: "សរុប (Total)",
+                statOnline: "ភ្ញាក់ (Awake)",
+                statPaused: "ផ្អាក (Paused)",
+                statWaking: "កំពុងភ្ញាក់ (Waking)",
+                statOffline: "ដាច់ (Offline)",
+                formAppName: "ឈ្មោះ App",
+                formAppUrl: "Render Service URL",
+                btnAddApp: "បន្ថែម App",
+                tableTitle: "បញ្ជី Endpoints របស់អ្នក",
+                thName: "ឈ្មោះ App",
+                thUrl: "Target Endpoint",
+                thStatus: "ស្ថានភាព (Status)",
+                thLatency: "ល្បឿន (Latency)",
+                thLastSweep: "Sweep ចុងក្រោយ",
+                thActions: "សកម្មភាព",
+                emptyTitle: "មិនទាន់មាន App ណាត្រូវបាន Monitor នៅឡើយទេ",
+                dockHome: "ទំព័រដើម",
+                dockSweep: "Sweep",
+                dockSync: "Sync",
+                dockLang: "ភាសា",
+                btnPause: "ផ្អាក",
+                btnStart: "Start",
+                btnPing: "Ping",
+                btnDelete: "លុប",
+                badgePaused: "ផ្អាក",
+                justNow: "អម្បាញ់មិញ",
+                secondsAgo: "វិនាទីមុន",
+                minutesAgo: "នាទីមុន",
+                hoursAgo: "ម៉ោងមុន",
+                neverChecked: "មិនទាន់បាន Ping"
+            },
+            en: {
+                tagline: "24/7 Render Keep-Awake Engine",
+                signIn: "Sign In with Google",
+                sweepAll: "Sweep All",
+                heroTitle1: "Prevent Cold Boots.",
+                heroTitle2: "Keep Render 24/7 Awake.",
+                heroDesc: "Connect your Google Account to manage your private list of Render apps.",
+                loginBoxTitle: "Sign In to Dashboard",
+                statTotal: "Total",
+                statOnline: "Awake",
+                statPaused: "Paused",
+                statWaking: "Waking",
+                statOffline: "Offline",
+                formAppName: "App Name",
+                formAppUrl: "Render Service URL",
+                btnAddApp: "Add App",
+                tableTitle: "Your Managed Endpoints",
+                thName: "Deployment Name",
+                thUrl: "Target Endpoint",
+                thStatus: "Live Status",
+                thLatency: "Latency",
+                thLastSweep: "Last Sweep",
+                thActions: "Actions",
+                emptyTitle: "No Render Apps Monitored",
+                dockHome: "Home",
+                dockSweep: "Sweep",
+                dockSync: "Sync",
+                dockLang: "Language",
+                btnPause: "Pause",
+                btnStart: "Start",
+                btnPing: "Ping",
+                btnDelete: "Delete",
+                badgePaused: "Paused",
+                justNow: "Just now",
+                secondsAgo: "s ago",
+                minutesAgo: "m ago",
+                hoursAgo: "h ago",
+                neverChecked: "Never checked"
+            }
+        };
+
+        let currentLang = localStorage.getItem('keepalive_lang') || 'km';
         let allUrls = [];
-        let refreshTimer = null;
-        let countdown = 15;
         let currentUser = null;
         let authToken = localStorage.getItem('keepalive_google_token') || null;
+
+        function setLanguage(lang) {
+            currentLang = lang;
+            localStorage.setItem('keepalive_lang', lang);
+            document.documentElement.lang = lang;
+            const flagElem = document.getElementById('lang-flag');
+            const labelElem = document.getElementById('lang-label');
+            const dockFlag = document.getElementById('dock-lang-flag');
+            const dockLabel = document.getElementById('dock-lang-label');
+            if (lang === 'km') {
+                if (flagElem) flagElem.innerText = '🇰🇭';
+                if (labelElem) labelElem.innerText = 'ខ្មែរ';
+                if (dockFlag) dockFlag.innerText = '🇰🇭';
+                if (dockLabel) dockLabel.innerText = 'ខ្មែរ';
+            } else {
+                if (flagElem) flagElem.innerText = '🇺🇸';
+                if (labelElem) labelElem.innerText = 'ENG';
+                if (dockFlag) dockFlag.innerText = '🇺🇸';
+                if (dockLabel) dockLabel.innerText = 'ENG';
+            }
+            document.querySelectorAll('[data-i18n]').forEach(el => {
+                const key = el.getAttribute('data-i18n');
+                if (i18n[lang][key]) el.innerText = i18n[lang][key];
+            });
+            if (allUrls && allUrls.length > 0) renderAll(allUrls);
+        }
+
+        function toggleLanguage() {
+            setLanguage(currentLang === 'km' ? 'en' : 'km');
+        }
 
         function initTheme() {
             const saved = localStorage.getItem('keepalive_theme');
@@ -663,6 +776,7 @@ function renderDashboardHtml() {
 
         window.onload = function () {
             initTheme();
+            setLanguage(currentLang);
             lucide.createIcons();
             initGoogleAuth();
             if (authToken) restoreSession();
@@ -769,17 +883,17 @@ function renderDashboardHtml() {
         }
 
         function formatRelativeTime(isoString) {
-            if (!isoString) return 'Never checked';
+            if (!isoString) return i18n[currentLang].neverChecked;
             const diffSeconds = Math.floor((new Date() - new Date(isoString)) / 1000);
-            if (diffSeconds < 60) return diffSeconds + 's ago';
+            if (diffSeconds < 60) return diffSeconds + ' ' + i18n[currentLang].secondsAgo;
             const diffMins = Math.floor(diffSeconds / 60);
-            if (diffMins < 60) return diffMins + 'm ago';
-            return Math.floor(diffMins / 60) + 'h ago';
+            if (diffMins < 60) return diffMins + ' ' + i18n[currentLang].minutesAgo;
+            return Math.floor(diffMins / 60) + ' ' + i18n[currentLang].hoursAgo;
         }
 
         function getStatusBadge(status, httpCode, isActive = true) {
             if (!isActive || status === 'Paused') {
-                return '<span class="px-2.5 py-1 rounded-full text-[11px] font-bold bg-amber-100 text-amber-800 dark:bg-amber-500/10 dark:text-amber-300 border border-amber-300 dark:border-amber-500/30">Paused</span>';
+                return '<span class="px-2.5 py-1 rounded-full text-[11px] font-bold bg-amber-100 text-amber-800 dark:bg-amber-500/10 dark:text-amber-300 border border-amber-300 dark:border-amber-500/30">' + i18n[currentLang].badgePaused + '</span>';
             }
             if (status.startsWith('Active')) {
                 return '<span class="px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-500/30">' + status + '</span>';
@@ -799,8 +913,8 @@ function renderDashboardHtml() {
             }
             emptyView.classList.add('hidden');
 
-            mobileContainer.innerHTML = urls.map(item => \`
-                <div class="theme-surface p-4 rounded-2xl border \${item.is_active ? 'border-slate-200 dark:border-slate-800' : 'border-amber-300 dark:border-amber-500/30'} space-y-3">
+            mobileContainer.innerHTML = urls.map((item, idx) => \`
+                <div style="animation-delay: \${idx * 45}ms;" class="animate-slide-up hover-lift theme-surface p-4 rounded-2xl border \${item.is_active ? 'border-slate-200 dark:border-slate-800' : 'border-amber-300 dark:border-amber-500/30'} space-y-3">
                     <div class="flex justify-between items-start">
                         <div>
                             <h4 class="font-extrabold text-sm text-slate-900 dark:text-white">\${escapeHtml(item.name)}</h4>
@@ -810,24 +924,24 @@ function renderDashboardHtml() {
                     </div>
                     <div class="font-mono text-xs text-orange-600 dark:text-orange-400 truncate bg-slate-50 dark:bg-slate-900 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800">\${escapeHtml(item.url)}</div>
                     <div class="grid grid-cols-3 gap-1.5 pt-1">
-                        <button onclick="toggleActive(\${item.id}, this)" class="h-9 rounded-xl bg-slate-100 dark:bg-slate-800 font-bold text-xs text-amber-700 dark:text-amber-300">\${item.is_active ? 'Pause' : 'Start'}</button>
-                        <button onclick="triggerPing(\${item.id}, this)" class="h-9 rounded-xl bg-orange-50 dark:bg-orange-600/20 font-bold text-xs text-orange-700 dark:text-orange-300">Ping</button>
-                        <button onclick="deleteUrl(\${item.id}, '\${escapeHtml(item.name)}')" class="h-9 rounded-xl bg-rose-50 dark:bg-rose-600/15 font-bold text-xs text-rose-700 dark:text-rose-300">Delete</button>
+                        <button onclick="toggleActive(\${item.id}, this)" class="h-9 rounded-xl bg-slate-100 dark:bg-slate-800 font-bold text-xs text-amber-700 dark:text-amber-300">\${item.is_active ? i18n[currentLang].btnPause : i18n[currentLang].btnStart}</button>
+                        <button onclick="triggerPing(\${item.id}, this)" class="h-9 rounded-xl bg-orange-50 dark:bg-orange-600/20 font-bold text-xs text-orange-700 dark:text-orange-300">\${i18n[currentLang].btnPing}</button>
+                        <button onclick="deleteUrl(\${item.id}, '\${escapeHtml(item.name)}')" class="h-9 rounded-xl bg-rose-50 dark:bg-rose-600/15 font-bold text-xs text-rose-700 dark:text-rose-300">\${i18n[currentLang].btnDelete}</button>
                     </div>
                 </div>
             \`).join('');
 
-            tbody.innerHTML = urls.map(item => \`
-                <tr class="hover:bg-slate-50 dark:hover:bg-slate-900/50">
+            tbody.innerHTML = urls.map((item, idx) => \`
+                <tr style="animation-delay: \${idx * 40}ms;" class="animate-slide-up hover:bg-slate-50 dark:hover:bg-slate-900/50">
                     <td class="px-6 py-4 font-bold text-slate-900 dark:text-white">\${escapeHtml(item.name)}</td>
                     <td class="px-6 py-4 font-mono text-xs text-orange-600 dark:text-orange-400 truncate max-w-xs">\${escapeHtml(item.url)}</td>
                     <td class="px-6 py-4">\${getStatusBadge(item.status, item.http_code, item.is_active)}</td>
                     <td class="px-6 py-4 text-xs font-mono text-emerald-600 dark:text-emerald-400 font-bold">\${item.response_time_ms ? item.response_time_ms + ' ms' : '--'}</td>
                     <td class="px-6 py-4 text-xs text-slate-500">\${formatRelativeTime(item.last_ping)}</td>
                     <td class="px-6 py-4 text-right space-x-1.5">
-                        <button onclick="toggleActive(\${item.id}, this)" class="px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-bold text-amber-700 dark:text-amber-300">\${item.is_active ? 'Pause' : 'Start'}</button>
-                        <button onclick="triggerPing(\${item.id}, this)" class="px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-bold text-orange-700 dark:text-orange-300">Ping</button>
-                        <button onclick="deleteUrl(\${item.id}, '\${escapeHtml(item.name)}')" class="px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-bold text-rose-700 dark:text-rose-300">Delete</button>
+                        <button onclick="toggleActive(\${item.id}, this)" class="px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-bold text-amber-700 dark:text-amber-300">\${item.is_active ? i18n[currentLang].btnPause : i18n[currentLang].btnStart}</button>
+                        <button onclick="triggerPing(\${item.id}, this)" class="px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-bold text-orange-700 dark:text-orange-300">\${i18n[currentLang].btnPing}</button>
+                        <button onclick="deleteUrl(\${item.id}, '\${escapeHtml(item.name)}')" class="px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-bold text-rose-700 dark:text-rose-300">\${i18n[currentLang].btnDelete}</button>
                     </td>
                 </tr>
             \`).join('');
@@ -876,10 +990,6 @@ function renderDashboardHtml() {
         function filterUrls() {
             const q = document.getElementById('filter-input').value.toLowerCase();
             renderAll(allUrls.filter(u => u.name.toLowerCase().includes(q) || u.url.toLowerCase().includes(q)));
-        }
-
-        function copyToClipboard(text) {
-            navigator.clipboard.writeText(text);
         }
 
         function escapeHtml(str) {

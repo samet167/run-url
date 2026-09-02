@@ -443,28 +443,47 @@ function renderDashboardHtml() {
         }
     </script>
     <style>
-        * { transition: background-color 0.25s ease, border-color 0.25s ease; }
+        * {
+            transition: background-color 0.3s cubic-bezier(0.16, 1, 0.3, 1), 
+                        border-color 0.3s cubic-bezier(0.16, 1, 0.3, 1), 
+                        box-shadow 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+                        transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+        }
         ::-webkit-scrollbar { width: 5px; height: 5px; }
-        .dark ::-webkit-scrollbar-track { background: #090d16; }
+        .dark ::-webkit-scrollbar-track { background: #070a11; }
         .dark ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 9999px; }
         ::-webkit-scrollbar-track { background: #f1f5f9; }
         ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 9999px; }
 
         .theme-glass {
             background: rgba(255, 255, 255, 0.85);
-            backdrop-filter: blur(20px);
-            -webkit-backdrop-filter: blur(20px);
-            border: 1px solid rgba(226, 232, 240, 0.9);
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+            border: 1px solid rgba(226, 232, 240, 0.85);
         }
         .dark .theme-glass {
             background: rgba(13, 19, 33, 0.78);
-            backdrop-filter: blur(20px);
-            -webkit-backdrop-filter: blur(20px);
-            border: 1px solid rgba(255, 255, 255, 0.07);
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
         }
         .theme-surface { background: #ffffff; border: 1px solid #e2e8f0; }
         .dark .theme-surface { background: #0d1321; border: 1px solid rgba(255, 255, 255, 0.07); }
-        button, a, input { -webkit-tap-highlight-color: transparent; }
+        button, a, input { -webkit-tap-highlight-color: transparent; user-select: none; }
+
+        @keyframes slideUpFade {
+            from { opacity: 0; transform: translateY(12px) scale(0.98); }
+            to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        .animate-slide-up {
+            animation: slideUpFade 0.45s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+        .hover-lift {
+            transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        .hover-lift:hover {
+            transform: translateY(-2px);
+        }
     </style>
 </head>
 <body class="bg-slate-50 text-slate-800 dark:bg-[#070a11] dark:text-slate-100 min-h-screen font-sans antialiased selection:bg-orange-500 selection:text-white flex flex-col pb-20 md:pb-0">

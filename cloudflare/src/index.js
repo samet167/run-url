@@ -1,6 +1,9 @@
 import { neon } from '@neondatabase/serverless';
 
 const GOOGLE_CLIENT_ID = '1015295193209-pqllnd3a5d5m1m11nu4hvkvfdpbapm87.apps.googleusercontent.com';
+const ADMIN_USERNAME = 'admin';
+const ADMIN_PASSWORD = '12345678';
+const ADMIN_TOKEN_SECRET = 'superadmin_keepalive_secret_2026';
 
 // -----------------------------------------------------------------------------
 // Core Ping Logic
@@ -207,7 +210,119 @@ export default {
       }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
-    // Authenticated Routes
+    // =========================================================================
+    // SUPERADMIN ROUTES
+    // =========================================================================
+    if (url.pathname === '/api/admin/login' && request.method === 'POST') {
+      try {
+        const body = await request.json();
+        const username = (body.username || '').trim();
+        const password = (body.password || '').trim();
+        if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
+          return new Response(JSON.stringify({
+            success: true,
+            token: ADMIN_TOKEN_SECRET,
+            user: { username: ADMIN_USERNAME, role: 'superadmin', name: 'Super Administrator' },
+            message: 'SuperAdmin authenticated successfully.'
+          }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+        }
+        return new Response(JSON.stringify({ detail: 'Invalid username or password.' }), {
+          status: 401,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ detail: err.message }), { status: 400, headers: corsHeaders });
+      }
+    }
+
+    if (url.pathname.startsWith('/api/admin/')) {
+      const authHeader = request.headers.get('Authorization') || '';
+      const token = authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1].trim() : '';
+      if (token !== ADMIN_TOKEN_SECRET) {
+        return new Response(JSON.stringify({ detail: 'SuperAdmin authorization required.' }), {
+          status: 403,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      }
+
+      // Router: GET /api/admin/stats
+      if (url.pathname === '/api/admin/stats' && request.method === 'GET') {
+        const users = await sql`SELECT id FROM users`;
+        const urls = await sql`SELECT status, is_active FROM monitored_urls`;
+        const total_users = users.length;
+        const total_urls = urls.length;
+        const alive = urls.filter(r => r.is_active && r.status && r.status.startsWith('Active')).length;
+        const waking = urls.filter(r => r.is_active && r.status && (r.status.includes('Waking') || r.status.includes('Redirect'))).length;
+        const failed = urls.filter(r => r.is_active && r.status && (r.status.includes('Failed') || r.status.includes('Timeout') || r.status.includes('Unreachable'))).length;
+        const paused = urls.filter(r => !r.is_active).length;
+
+        return new Response(JSON.stringify({
+          total_users,
+          total_urls,
+          alive,
+          waking,
+          failed,
+          paused
+        }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
+
+      // Router: GET /api/admin/users
+      if (url.pathname === '/api/admin/users' && request.method === 'GET') {
+        const users = await sql`SELECT * FROM users ORDER BY id DESC`;
+        const allUrls = await sql`SELECT user_id, user_email FROM monitored_urls`;
+        const result = users.map(u => ({
+          ...u,
+          total_urls: allUrls.filter(r => r.user_id === u.id || r.user_email === u.email).length
+        }));
+        return new Response(JSON.stringify(result), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      }
+
+      // Router: GET /api/admin/urls
+      if (url.pathname === '/api/admin/urls' && request.method === 'GET') {
+        const urls = await sql`SELECT * FROM monitored_urls ORDER BY id DESC`;
+        return new Response(JSON.stringify(urls), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      }
+
+      // Router: POST /api/admin/urls/:id/toggle
+      if (url.pathname.match(/^\/api\/admin\/urls\/\d+\/toggle$/) && request.method === 'POST') {
+        const id = parseInt(url.pathname.split('/')[4], 10);
+        const rows = await sql`SELECT * FROM monitored_urls WHERE id = ${id}`;
+        if (!rows || rows.length === 0) return new Response(JSON.stringify({ detail: 'Not found' }), { status: 404, headers: corsHeaders });
+        const nextActive = !rows[0].is_active;
+        const nextStatus = nextActive ? 'Resuming...' : 'Paused';
+        const updated = await sql`UPDATE monitored_urls SET is_active = ${nextActive}, status = ${nextStatus} WHERE id = ${id} RETURNING *`;
+        if (nextActive) ctx.waitUntil(pingAndSaveUrl(sql, id, updated[0].url));
+        return new Response(JSON.stringify({ success: true, message: `Status updated`, data: updated[0] }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      }
+
+      // Router: DELETE /api/admin/urls/:id
+      if (url.pathname.startsWith('/api/admin/urls/') && request.method === 'DELETE') {
+        const id = parseInt(url.pathname.split('/').pop(), 10);
+        await sql`DELETE FROM monitored_urls WHERE id = ${id}`;
+        return new Response(JSON.stringify({ success: true, message: 'Target deleted from system.' }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      }
+
+      // Router: POST /api/admin/ping-all
+      if (url.pathname === '/api/admin/ping-all' && request.method === 'POST') {
+        const urls = await sql`SELECT id, url FROM monitored_urls WHERE is_active = TRUE`;
+        ctx.waitUntil(Promise.allSettled(urls.map(r => pingAndSaveUrl(sql, r.id, r.url))));
+        return new Response(JSON.stringify({ success: true, message: `Global sweep started for ${urls.length} targets!` }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      }
+    }
+
+    // =========================================================================
+    // REGULAR USER AUTHENTICATED ROUTES
+    // =========================================================================
     const authHeader = request.headers.get('Authorization');
     let currentUser;
     try {
@@ -407,7 +522,7 @@ export default {
 };
 
 // -----------------------------------------------------------------------------
-// Cloudflare Worker Embedded Dashboard HTML (Bilingual Khmer + English)
+// Cloudflare Worker Embedded Dashboard HTML
 // -----------------------------------------------------------------------------
 function renderDashboardHtml() {
   return `<!DOCTYPE html>
@@ -501,12 +616,18 @@ function renderDashboardHtml() {
                     <div class="flex items-center gap-1.5">
                         <span class="text-sm sm:text-base font-extrabold tracking-tight text-slate-900 dark:text-white">KeepAlive</span>
                         <span class="text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider bg-orange-100 text-orange-700 dark:bg-orange-500/15 dark:text-orange-400 border border-orange-300/40 dark:border-orange-500/30">Edge</span>
+                        <span id="header-admin-badge" class="hidden text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider bg-amber-500/20 text-amber-500 border border-amber-500/40">SuperAdmin</span>
                     </div>
                     <p data-i18n="tagline" class="hidden xs:block text-[11px] text-slate-500 dark:text-slate-400 truncate">ប្រព័ន្ធដាស់ Render 24/7 ស្វ័យប្រវត្តិ</p>
                 </div>
             </div>
 
             <div class="flex items-center gap-2 sm:gap-2.5 shrink-0">
+                <button onclick="openSuperAdminModal()" id="btn-admin-portal" class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-amber-100/80 hover:bg-amber-200 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-500/30 text-xs font-bold active:scale-95 cursor-pointer">
+                    <i data-lucide="shield" class="w-3.5 h-3.5 text-amber-500"></i>
+                    <span class="font-mono text-[11px] hidden xs:inline">Admin</span>
+                </button>
+
                 <button onclick="toggleLanguage()" id="lang-toggle-btn" class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-800 text-xs font-bold active:scale-95 cursor-pointer">
                     <span id="lang-flag" class="text-sm">🇰🇭</span>
                     <span id="lang-label" class="font-mono text-[11px]">ខ្មែរ</span>
@@ -562,6 +683,7 @@ function renderDashboardHtml() {
             </div>
         </section>
 
+        <!-- User Dashboard View -->
         <div id="authenticated-dashboard" class="hidden space-y-4 sm:space-y-6">
             <section class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5 sm:gap-4">
                 <div class="theme-surface p-4 rounded-2xl shadow-card-light dark:shadow-card-dark hover-lift">
@@ -634,14 +756,150 @@ function renderDashboardHtml() {
                 </div>
             </section>
         </div>
+
+        <!-- SuperAdmin Master Dashboard View -->
+        <div id="superadmin-dashboard" class="hidden space-y-4 sm:space-y-6">
+            <div class="p-4 sm:p-5 rounded-3xl bg-gradient-to-r from-amber-500/15 via-orange-500/10 to-amber-600/15 border border-amber-500/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-lg">
+                <div class="flex items-center gap-3">
+                    <div class="p-2.5 rounded-2xl bg-amber-500 text-slate-950 font-bold">
+                        <i data-lucide="crown" class="w-6 h-6"></i>
+                    </div>
+                    <div>
+                        <div class="flex items-center gap-2">
+                            <h2 class="text-base sm:text-lg font-extrabold text-slate-900 dark:text-white">SuperAdmin Control Center</h2>
+                            <span class="text-[10px] px-2 py-0.5 rounded-full font-bold bg-amber-500 text-slate-950 uppercase">Master</span>
+                        </div>
+                        <p class="text-xs text-slate-600 dark:text-slate-400">Global Oversight Across All Users</p>
+                    </div>
+                </div>
+                <div class="flex items-center gap-2 w-full sm:w-auto">
+                    <button onclick="triggerAdminGlobalSweep()" id="btn-admin-sweep" class="flex-1 sm:flex-initial px-3.5 py-2 rounded-xl text-xs font-bold bg-amber-500 text-slate-950 shadow-md active:scale-95 transition">
+                        Global Sweep All
+                    </button>
+                    <button onclick="exitSuperAdminMode()" class="px-3 py-2 rounded-xl text-xs font-bold bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 active:scale-95 transition">
+                        Exit Admin
+                    </button>
+                </div>
+            </div>
+
+            <section class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5 sm:gap-4">
+                <div class="theme-surface p-4 rounded-2xl shadow-card-light dark:shadow-card-dark border-indigo-500/30">
+                    <span class="text-[11px] font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider block">Total Users</span>
+                    <span id="admin-stat-users" class="text-2xl sm:text-3xl font-extrabold text-indigo-600 dark:text-indigo-400 font-mono">0</span>
+                </div>
+                <div class="theme-surface p-4 rounded-2xl shadow-card-light dark:shadow-card-dark">
+                    <span class="text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">Global URLs</span>
+                    <span id="admin-stat-urls" class="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white font-mono">0</span>
+                </div>
+                <div class="theme-surface p-4 rounded-2xl shadow-card-light dark:shadow-card-dark border-emerald-500/30">
+                    <span class="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider block">Active Online</span>
+                    <span id="admin-stat-alive" class="text-2xl sm:text-3xl font-extrabold text-emerald-600 dark:text-emerald-400 font-mono">0</span>
+                </div>
+                <div class="theme-surface p-4 rounded-2xl shadow-card-light dark:shadow-card-dark border-amber-500/30">
+                    <span class="text-[11px] font-bold text-amber-600 dark:text-amber-300 uppercase tracking-wider block">Paused</span>
+                    <span id="admin-stat-paused" class="text-2xl sm:text-3xl font-extrabold text-amber-600 dark:text-amber-300 font-mono">0</span>
+                </div>
+                <div class="theme-surface p-4 rounded-2xl shadow-card-light dark:shadow-card-dark border-rose-500/30 col-span-2 sm:col-span-1">
+                    <span class="text-[11px] font-bold text-rose-600 dark:text-rose-400 uppercase tracking-wider block">Failing / Error</span>
+                    <span id="admin-stat-failed" class="text-2xl sm:text-3xl font-extrabold text-rose-600 dark:text-rose-400 font-mono">0</span>
+                </div>
+            </section>
+
+            <section class="theme-surface rounded-3xl overflow-hidden shadow-card-light dark:shadow-card-dark">
+                <div class="px-4 sm:px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+                    <div class="flex items-center gap-2">
+                        <button onclick="switchAdminTab('urls')" id="tab-btn-urls" class="px-3 py-1.5 rounded-xl text-xs font-bold bg-amber-500 text-slate-950">
+                            🌐 All Endpoints Master (<span id="admin-tab-count-urls">0</span>)
+                        </button>
+                        <button onclick="switchAdminTab('users')" id="tab-btn-users" class="px-3 py-1.5 rounded-xl text-xs font-bold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">
+                            👥 Registered Users (<span id="admin-tab-count-users">0</span>)
+                        </button>
+                    </div>
+                    <div class="w-full sm:w-64 relative">
+                        <input type="text" id="admin-filter-input" oninput="filterAdminData()" placeholder="Filter..." class="w-full h-9 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-xl px-3 text-xs text-slate-900 dark:text-white">
+                    </div>
+                </div>
+
+                <div id="admin-tab-urls" class="overflow-x-auto">
+                    <table class="w-full text-left text-sm">
+                        <thead class="bg-slate-50 dark:bg-slate-900/60 border-b border-slate-200 dark:border-slate-800 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase">
+                            <tr>
+                                <th class="px-6 py-3.5">Owner</th>
+                                <th class="px-6 py-3.5">App Name</th>
+                                <th class="px-6 py-3.5">Target Endpoint</th>
+                                <th class="px-6 py-3.5">Status</th>
+                                <th class="px-6 py-3.5">Latency</th>
+                                <th class="px-6 py-3.5 text-right">Admin Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="admin-urls-table-body" class="divide-y divide-slate-100 dark:divide-slate-800/60"></tbody>
+                    </table>
+                </div>
+
+                <div id="admin-tab-users" class="hidden overflow-x-auto">
+                    <table class="w-full text-left text-sm">
+                        <thead class="bg-slate-50 dark:bg-slate-900/60 border-b border-slate-200 dark:border-slate-800 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase">
+                            <tr>
+                                <th class="px-6 py-3.5">User</th>
+                                <th class="px-6 py-3.5">Email</th>
+                                <th class="px-6 py-3.5">Endpoints</th>
+                                <th class="px-6 py-3.5">Join Date</th>
+                            </tr>
+                        </thead>
+                        <tbody id="admin-users-table-body" class="divide-y divide-slate-100 dark:divide-slate-800/60"></tbody>
+                    </table>
+                </div>
+            </section>
+        </div>
     </main>
 
+    <!-- SuperAdmin Login Modal -->
+    <div id="superadmin-login-modal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-md hidden">
+        <div class="theme-surface w-full max-w-sm rounded-3xl p-6 shadow-2xl border border-amber-500/40 relative space-y-4 animate-slide-up">
+            <button onclick="closeSuperAdminModal()" class="absolute top-4 right-4 text-slate-400 hover:text-slate-600">
+                <i data-lucide="x" class="w-4 h-4"></i>
+            </button>
+            <div class="flex items-center gap-3">
+                <div class="p-2.5 rounded-2xl bg-amber-500 text-slate-950 font-bold">
+                    <i data-lucide="shield-alert" class="w-5 h-5"></i>
+                </div>
+                <div>
+                    <h3 class="text-base font-extrabold text-slate-900 dark:text-white">SuperAdmin Portal</h3>
+                    <p class="text-xs text-slate-500">Private System Administrator</p>
+                </div>
+            </div>
+            <form onsubmit="handleSuperAdminLogin(event)" class="space-y-3 pt-2">
+                <div>
+                    <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Username</label>
+                    <input type="text" id="admin-username" required placeholder="admin" value="admin" class="w-full h-10 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl px-3 text-xs font-mono text-slate-900 dark:text-white">
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Password</label>
+                    <input type="password" id="admin-password" required placeholder="12345678" value="12345678" class="w-full h-10 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl px-3 text-xs font-mono text-slate-900 dark:text-white">
+                </div>
+                <button type="submit" id="btn-submit-admin-login" class="w-full h-10 rounded-xl font-bold text-xs bg-amber-500 text-slate-950 active:scale-95 cursor-pointer mt-2">
+                    Authenticate as SuperAdmin
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Mobile Dock -->
     <nav id="mobile-dock" class="fixed bottom-0 inset-x-0 z-40 md:hidden bg-white/95 dark:bg-[#070a11]/95 backdrop-blur-xl border-t border-slate-200 dark:border-slate-800 px-4 py-2 flex items-center justify-around shadow-2xl">
         <button onclick="window.scrollTo({top:0,behavior:'smooth'})" class="flex flex-col items-center gap-1 text-slate-600 dark:text-slate-400 active:scale-90"><i data-lucide="home" class="w-5 h-5"></i><span data-i18n="dockHome" class="text-[10px] font-bold">ទំព័រដើម</span></button>
         <button onclick="triggerPingAll()" class="flex flex-col items-center gap-1 text-slate-600 dark:text-slate-400 active:scale-90"><i data-lucide="zap" class="w-5 h-5"></i><span data-i18n="dockSweep" class="text-[10px] font-bold">Sweep</span></button>
+        <button onclick="openSuperAdminModal()" class="flex flex-col items-center gap-1 text-amber-600 dark:text-amber-400 active:scale-90"><i data-lucide="shield" class="w-5 h-5"></i><span class="text-[10px] font-bold">Admin</span></button>
         <button onclick="fetchData(true)" class="flex flex-col items-center gap-1 text-slate-600 dark:text-slate-400 active:scale-90"><i data-lucide="rotate-cw" class="w-5 h-5"></i><span data-i18n="dockSync" class="text-[10px] font-bold">Sync</span></button>
         <button onclick="toggleLanguage()" class="flex flex-col items-center gap-1 text-slate-600 dark:text-slate-400 active:scale-90"><span id="dock-lang-flag" class="text-base leading-none">🇰🇭</span><span id="dock-lang-label" class="text-[10px] font-bold">ភាសា</span></button>
     </nav>
+
+    <footer class="border-t border-slate-200 dark:border-slate-800/80 py-6 text-center text-xs text-slate-500 dark:text-slate-400 px-4 mt-8 flex flex-col sm:flex-row items-center justify-center gap-3">
+        <p>KeepAlive Hub &bull; 24/7 Render Keep-Awake Engine &bull; Neon PostgreSQL</p>
+        <span class="hidden sm:inline">&bull;</span>
+        <button onclick="openSuperAdminModal()" class="text-amber-600 dark:text-amber-400 font-bold hover:underline cursor-pointer">
+            SuperAdmin Portal 👑
+        </button>
+    </footer>
 
     <div id="toast-container" class="fixed bottom-16 sm:bottom-4 inset-x-3 sm:inset-x-auto sm:right-5 z-50 flex flex-col gap-2 pointer-events-none"></div>
 
@@ -675,7 +933,6 @@ function renderDashboardHtml() {
                 dockHome: "ទំព័រដើម",
                 dockSweep: "Sweep",
                 dockSync: "Sync",
-                dockLang: "ភាសា",
                 btnPause: "ផ្អាក",
                 btnStart: "Start",
                 btnPing: "Ping",
@@ -714,7 +971,6 @@ function renderDashboardHtml() {
                 dockHome: "Home",
                 dockSweep: "Sweep",
                 dockSync: "Sync",
-                dockLang: "Language",
                 btnPause: "Pause",
                 btnStart: "Start",
                 btnPing: "Ping",
@@ -732,6 +988,13 @@ function renderDashboardHtml() {
         let allUrls = [];
         let currentUser = null;
         let authToken = localStorage.getItem('keepalive_google_token') || null;
+
+        // SuperAdmin States
+        let isSuperAdmin = false;
+        let adminToken = localStorage.getItem('keepalive_admin_token') || null;
+        let adminAllUrls = [];
+        let adminAllUsers = [];
+        let currentAdminTab = 'urls';
 
         function setLanguage(lang) {
             currentLang = lang;
@@ -779,7 +1042,8 @@ function renderDashboardHtml() {
             setLanguage(currentLang);
             lucide.createIcons();
             initGoogleAuth();
-            if (authToken) restoreSession();
+            if (adminToken) verifyAdminSession();
+            else if (authToken) restoreSession();
             else showLoggedOutUI();
         };
 
@@ -836,9 +1100,11 @@ function renderDashboardHtml() {
 
         function showLoggedInUI(user) {
             document.getElementById('login-hero-view').classList.add('hidden');
+            document.getElementById('superadmin-dashboard').classList.add('hidden');
             document.getElementById('authenticated-dashboard').classList.remove('hidden');
             document.getElementById('auth-controls').classList.remove('hidden');
             document.getElementById('unauth-header-btn').classList.add('hidden');
+            document.getElementById('header-admin-badge').classList.add('hidden');
             document.getElementById('user-name').innerText = user.name || 'User';
             document.getElementById('user-email').innerText = user.email || '';
             const avatarElem = document.getElementById('user-avatar');
@@ -849,8 +1115,10 @@ function renderDashboardHtml() {
         function showLoggedOutUI() {
             document.getElementById('login-hero-view').classList.remove('hidden');
             document.getElementById('authenticated-dashboard').classList.add('hidden');
+            document.getElementById('superadmin-dashboard').classList.add('hidden');
             document.getElementById('auth-controls').classList.add('hidden');
             document.getElementById('unauth-header-btn').classList.remove('hidden');
+            document.getElementById('header-admin-badge').classList.add('hidden');
             renderGoogleSignInButton();
             lucide.createIcons();
         }
@@ -992,6 +1260,176 @@ function renderDashboardHtml() {
             renderAll(allUrls.filter(u => u.name.toLowerCase().includes(q) || u.url.toLowerCase().includes(q)));
         }
 
+        // ---------------------------------------------------------------------
+        // SuperAdmin Module
+        // ---------------------------------------------------------------------
+        function openSuperAdminModal() {
+            document.getElementById('superadmin-login-modal').classList.remove('hidden');
+            lucide.createIcons();
+        }
+
+        function closeSuperAdminModal() {
+            document.getElementById('superadmin-login-modal').classList.add('hidden');
+        }
+
+        async function handleSuperAdminLogin(event) {
+            event.preventDefault();
+            const username = document.getElementById('admin-username').value.trim();
+            const password = document.getElementById('admin-password').value.trim();
+            const submitBtn = document.getElementById('btn-submit-admin-login');
+            submitBtn.disabled = true;
+            try {
+                const res = await fetch('/api/admin/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'Login failed');
+                adminToken = data.token;
+                localStorage.setItem('keepalive_admin_token', adminToken);
+                closeSuperAdminModal();
+                showSuperAdminDashboard();
+            } catch (err) { alert(err.message); }
+            finally { submitBtn.disabled = false; }
+        }
+
+        async function verifyAdminSession() {
+            if (!adminToken) return;
+            try {
+                const res = await fetch('/api/admin/stats', { headers: { 'Authorization': 'Bearer ' + adminToken } });
+                if (!res.ok) throw new Error('Expired');
+                showSuperAdminDashboard();
+            } catch (err) {
+                adminToken = null;
+                localStorage.removeItem('keepalive_admin_token');
+                showLoggedOutUI();
+            }
+        }
+
+        function showSuperAdminDashboard() {
+            isSuperAdmin = true;
+            document.getElementById('login-hero-view').classList.add('hidden');
+            document.getElementById('authenticated-dashboard').classList.add('hidden');
+            document.getElementById('superadmin-dashboard').classList.remove('hidden');
+            document.getElementById('header-admin-badge').classList.remove('hidden');
+            fetchAdminData();
+            lucide.createIcons();
+        }
+
+        function exitSuperAdminMode() {
+            isSuperAdmin = false;
+            adminToken = null;
+            localStorage.removeItem('keepalive_admin_token');
+            document.getElementById('superadmin-dashboard').classList.add('hidden');
+            document.getElementById('header-admin-badge').classList.add('hidden');
+            if (authToken) restoreSession();
+            else showLoggedOutUI();
+        }
+
+        async function fetchAdminData() {
+            if (!adminToken) return;
+            try {
+                const [statsRes, urlsRes, usersRes] = await Promise.all([
+                    fetch('/api/admin/stats', { headers: { 'Authorization': 'Bearer ' + adminToken } }),
+                    fetch('/api/admin/urls', { headers: { 'Authorization': 'Bearer ' + adminToken } }),
+                    fetch('/api/admin/users', { headers: { 'Authorization': 'Bearer ' + adminToken } })
+                ]);
+                const stats = await statsRes.json();
+                adminAllUrls = await urlsRes.json();
+                adminAllUsers = await usersRes.json();
+
+                document.getElementById('admin-stat-users').innerText = stats.total_users || 0;
+                document.getElementById('admin-stat-urls').innerText = stats.total_urls || 0;
+                document.getElementById('admin-stat-alive').innerText = stats.alive || 0;
+                document.getElementById('admin-stat-paused').innerText = stats.paused || 0;
+                document.getElementById('admin-stat-failed').innerText = stats.failed || 0;
+
+                document.getElementById('admin-tab-count-urls').innerText = adminAllUrls.length;
+                document.getElementById('admin-tab-count-users').innerText = adminAllUsers.length;
+
+                renderAdminData();
+            } catch (err) { console.error(err); }
+        }
+
+        function switchAdminTab(tab) {
+            currentAdminTab = tab;
+            const btnUrls = document.getElementById('tab-btn-urls');
+            const btnUsers = document.getElementById('tab-btn-users');
+            const tabUrls = document.getElementById('admin-tab-urls');
+            const tabUsers = document.getElementById('admin-tab-users');
+            if (tab === 'urls') {
+                btnUrls.className = 'px-3 py-1.5 rounded-xl text-xs font-bold bg-amber-500 text-slate-950';
+                btnUsers.className = 'px-3 py-1.5 rounded-xl text-xs font-bold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300';
+                tabUrls.classList.remove('hidden');
+                tabUsers.classList.add('hidden');
+            } else {
+                btnUsers.className = 'px-3 py-1.5 rounded-xl text-xs font-bold bg-amber-500 text-slate-950';
+                btnUrls.className = 'px-3 py-1.5 rounded-xl text-xs font-bold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300';
+                tabUsers.classList.remove('hidden');
+                tabUrls.classList.add('hidden');
+            }
+            lucide.createIcons();
+        }
+
+        function renderAdminData() {
+            const tbodyUrls = document.getElementById('admin-urls-table-body');
+            tbodyUrls.innerHTML = adminAllUrls.map((item, idx) => \`
+                <tr style="animation-delay: \${idx * 30}ms;" class="animate-slide-up hover:bg-slate-50 dark:hover:bg-slate-900/50">
+                    <td class="px-6 py-4 font-mono text-xs text-indigo-600 dark:text-indigo-400">\${escapeHtml(item.user_email || 'General')}</td>
+                    <td class="px-6 py-4 font-bold text-slate-900 dark:text-white">\${escapeHtml(item.name)}</td>
+                    <td class="px-6 py-4 font-mono text-xs text-amber-600 dark:text-amber-400 truncate max-w-xs">\${escapeHtml(item.url)}</td>
+                    <td class="px-6 py-4">\${getStatusBadge(item.status, item.http_code, item.is_active)}</td>
+                    <td class="px-6 py-4 text-xs font-mono">\${item.response_time_ms ? item.response_time_ms + ' ms' : '--'}</td>
+                    <td class="px-6 py-4 text-right space-x-1.5">
+                        <button onclick="adminToggleUrl(\${item.id})" class="px-2.5 py-1 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-bold text-amber-700 dark:text-amber-300">\${item.is_active ? 'Pause' : 'Start'}</button>
+                        <button onclick="adminDeleteUrl(\${item.id}, '\${escapeHtml(item.name)}')" class="px-2.5 py-1 rounded-xl bg-rose-50 dark:bg-rose-950/80 text-xs font-bold text-rose-600">Delete</button>
+                    </td>
+                </tr>
+            \`).join('');
+
+            const tbodyUsers = document.getElementById('admin-users-table-body');
+            tbodyUsers.innerHTML = adminAllUsers.map((u, idx) => \`
+                <tr style="animation-delay: \${idx * 30}ms;" class="animate-slide-up hover:bg-slate-50 dark:hover:bg-slate-900/50">
+                    <td class="px-6 py-4 font-bold text-slate-900 dark:text-white text-xs">\${escapeHtml(u.name || 'Anonymous')}</td>
+                    <td class="px-6 py-4 font-mono text-xs text-slate-600 dark:text-slate-300">\${escapeHtml(u.email)}</td>
+                    <td class="px-6 py-4 text-xs font-bold text-emerald-600">\${u.total_urls} apps</td>
+                    <td class="px-6 py-4 text-xs text-slate-500">\${formatRelativeTime(u.created_at)}</td>
+                </tr>
+            \`).join('');
+            lucide.createIcons();
+        }
+
+        async function adminToggleUrl(id) {
+            try {
+                await fetch('/api/admin/urls/' + id + '/toggle', { method: 'POST', headers: { 'Authorization': 'Bearer ' + adminToken } });
+                fetchAdminData();
+            } catch (err) { alert(err.message); }
+        }
+
+        async function adminDeleteUrl(id, name) {
+            if (!confirm('Permanently delete ' + name + '?')) return;
+            try {
+                await fetch('/api/admin/urls/' + id, { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + adminToken } });
+                fetchAdminData();
+            } catch (err) { alert(err.message); }
+        }
+
+        async function triggerAdminGlobalSweep() {
+            try {
+                await fetch('/api/admin/ping-all', { method: 'POST', headers: { 'Authorization': 'Bearer ' + adminToken } });
+                setTimeout(fetchAdminData, 2000);
+            } catch (err) { alert(err.message); }
+        }
+
+        function filterAdminData() {
+            const q = document.getElementById('admin-filter-input').value.toLowerCase();
+            const filteredUrls = adminAllUrls.filter(u => (u.name || '').toLowerCase().includes(q) || (u.url || '').toLowerCase().includes(q) || (u.user_email || '').toLowerCase().includes(q));
+            adminAllUrls = filteredUrls;
+            renderAdminData();
+        }
+
+        function copyToClipboard(text) { navigator.clipboard.writeText(text); }
         function escapeHtml(str) {
             if (!str) return '';
             return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
